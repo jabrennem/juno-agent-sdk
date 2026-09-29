@@ -59,9 +59,11 @@ Each playground takes a path to a local GGUF model:
 ./build-llama/juno_session_prep_planning_playground /absolute/path/to/model.gguf
 ./build-llama/juno_mix_playground /absolute/path/to/model.gguf
 ./build-llama/juno_weather_playground /absolute/path/to/model.gguf
+# Use a smaller context to exercise automatic compaction quickly.
+./build-llama/juno_weather_playground /absolute/path/to/model.gguf 1024 256
 ```
 
-The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. The planning and mix playgrounds are independent ad-hoc agent loops with tools restricted to their respective domains. Each supports `/help`, `/clear`, `/history`, and `/quit`. The example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
+The optional third argument to the weather playground sets the llama.cpp context size in tokens; its default is 4096. The optional fourth argument sets the generation budget; its default is 512. Pass smaller values such as `1024 256` to trigger compaction sooner. The playground preserves one recent turn so compaction can be exercised quickly. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. The planning and mix playgrounds are independent ad-hoc agent loops with tools restricted to their respective domains. Each supports `/help`, `/clear`, `/history`, and `/quit`. The example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
 
 ## Unit tests
 
@@ -195,8 +197,39 @@ Tool schemas, call arguments, and results use JSON strings. The same agent defin
 
 `Agent` owns a reusable model and shared behavior. Each `Conversation` owns an independent message history. A conversation sends its history to `Model::generate`, executes any returned tool calls, appends the tool results, and repeats until the model returns final text.
 
+Long conversations can be compacted without changing the full transcript retained by the
+application. Automatic compaction is enabled by default with a conservative 75% of the model's
+configured runtime context as its rendered-input threshold. Hosts can use an absolute token
+threshold instead or compact manually:
+
+```cpp
+auto agent = juno::sdk::Agent::create({
+    .model = model,
+    .compaction = {.max_context_percent = 75.0F, .preserve_recent_turns = 4},
+});
+auto conversation = agent.start_conversation();
+auto result = conversation.compact({.preserve_recent_turns = 2,
+                                    .focus = "Preserve decisions and unresolved failures."});
+```
+
+Compaction changes only the context sent to the model. `Conversation::history()` remains the
+complete transcript, and system/steering context plus recent conversation turns are retained.
+Before each inference turn, the model renders and measures the complete prompt, including chat
+template and tool-protocol overhead. When that input reaches the threshold, Juno compacts it and
+then renders and measures the replacement context again. The reserved output tokens are checked
+separately against the model's hard context capacity.
+
+`Conversation::context_usage()` returns the rendered input count, effective compaction threshold,
+output reservation, context capacity, and message count. Backends that cannot count with their own
+tokenizer may return an approximate measurement. Compaction lifecycle events are delivered through
+the normal event callback.
+
 ```text
 Conversation
+  → build complete GenerationRequest
+  → Model::measure
+  → compact and remeasure when needed
+  → verify input + output reservation fits
   → Model::generate
   → GenerationResponse
   → execute tool calls
