@@ -1,8 +1,5 @@
-#include <charconv>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -18,6 +15,8 @@ constexpr std::string_view kYellow = "\033[33m";
 constexpr std::string_view kBlue = "\033[34m";
 constexpr std::string_view kMagenta = "\033[35m";
 constexpr std::string_view kReset = "\033[0m";
+constexpr std::size_t kContextSize = 4096;
+constexpr std::size_t kGenerationTokens = 512;
 
 // Define structures to hold location and weather forecast data
 
@@ -179,28 +178,70 @@ format_threshold_usage(const std::size_t input_tokens, const std::size_t compact
   return output.str();
 }
 
-std::optional<std::size_t> parse_positive_size(const std::string_view value) {
-  std::size_t parsed = 0;
-  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
-  if (error != std::errc{} || end != value.data() + value.size() || parsed == 0)
-    return std::nullopt;
-  return parsed;
-}
-
-std::optional<juno::sdk::SteeringDocument> load_steering_file(const std::string &path) {
-  std::ifstream input(path);
-  if (!input)
-    return std::nullopt;
-  std::ostringstream content;
-  content << input.rdbuf();
-  return juno::sdk::SteeringDocument{path, content.str()};
-}
-
 void print_help() {
   std::cout << "Ask for a weather forecast for any city.\n"
             << "Example: What's the weather in Seattle for five days?\n"
             << "Commands: /clear, /compact, /context, /history, /help, /quit\n"
             << "Automatic compaction: enabled at 75% of the model context budget.\n";
+}
+
+// Callback function for the temperature_unit_conversion tool
+juno::sdk::ToolResult conversion_tool_handler(const juno::sdk::JsonObject &params) {
+  if (!params.contains("temperature_value") || !params["temperature_value"].is_number())
+    return {false, "temperature_value must be a number."};
+  if (!params.contains("source_unit") || !params["source_unit"].is_string())
+    return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
+
+  const double temperature_value = params["temperature_value"].get<double>();
+  const std::string source_unit = params["source_unit"].get<std::string>();
+
+  double result = 0.0;
+  std::string target_unit;
+  if (source_unit == "celsius") {
+    result = temperature_value * (9.0 / 5.0) + 32.0;
+    target_unit = "Fahrenheit";
+  } else if (source_unit == "fahrenheit") {
+    result = (temperature_value - 32.0) * (5.0 / 9.0);
+    target_unit = "Celsius";
+  } else {
+    return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
+  }
+
+  std::ostringstream output;
+  output << "Converted temperature: " << result << ' ' << target_unit;
+  return {true, output.str()};
+}
+
+// Callback function for the weather_forecast tool
+juno::sdk::ToolResult weather_forecast_tool_handler(const juno::sdk::JsonObject &params) {
+  // Determine the city to fetch the forecast for
+  std::string city;
+  if (params.contains("city") && params["city"].is_string())
+    city = params["city"].get<std::string>();
+  else if (params.contains("city"))
+    return {false, "weather_forecast requires city to be a string"};
+
+  if (city.empty())
+    return {false, "Please provide a city."};
+
+  // Determine the number of days for the forecast
+  const int days = params.value("days", 1);
+  if (days < 1 || days > 16)
+    return {false, "weather_forecast supports between 1 and 16 days"};
+
+  // Geocode the city to get its location
+  auto geocoded = geocode_city(city);
+  if (!geocoded)
+    return {false, geocoded.error().message};
+  const auto location = geocoded.value();
+
+  // Fetch the weather forecast for the location
+  auto forecast = fetch_forecast(location, days);
+  if (!forecast)
+    return {false, forecast.error().message};
+
+  // Return the formatted forecast
+  return {true, format_forecast(forecast.value())};
 }
 
 } // namespace
@@ -211,39 +252,16 @@ int main(int argc, char **argv) {
   curl_global_init(CURL_GLOBAL_DEFAULT);
   const auto curl_cleanup = [] { curl_global_cleanup(); };
 
-  // Check command-line arguments
-  if (argc < 2 || argc > 4) {
-    std::cerr << "Usage: " << argv[0]
-              << " /path/to/model.gguf [context-tokens] [generation-tokens]\n";
+  if (argc != 2) {
+    std::cerr << "Usage: " << argv[0] << " /path/to/model.gguf\n";
     curl_cleanup();
     return 2;
-  }
-
-  std::size_t context_size = 4096;
-  std::size_t generation_tokens = 512;
-  if (argc >= 3) {
-    const auto parsed = parse_positive_size(argv[2]);
-    if (!parsed) {
-      std::cerr << "context-tokens must be a positive integer\n";
-      curl_cleanup();
-      return 2;
-    }
-    context_size = *parsed;
-  }
-  if (argc == 4) {
-    const auto parsed = parse_positive_size(argv[3]);
-    if (!parsed) {
-      std::cerr << "generation-tokens must be a positive integer\n";
-      curl_cleanup();
-      return 2;
-    }
-    generation_tokens = *parsed;
   }
 
   // Load the LLaMA.cpp model
   auto model = juno::sdk::LlamaCppModel::create({
       .model_path = argv[1],
-      .context_size = context_size,
+      .context_size = kContextSize,
   });
 
   // Create a memory manager for the user's recent weather requests.
@@ -274,38 +292,15 @@ int main(int argc, char **argv) {
       {.name = "weather_forecast",
        .description = "Get weather forecast for a city.",
        .parameters =
-           {{"city", "The city to forecast", "string", true},
-            {"days", "Number of days for the forecast", "integer", false}},
-       .handler = [](const juno::sdk::JsonObject &params) -> juno::sdk::ToolResult {
-         // Determine the city to fetch the forecast for
-         std::string city;
-         if (params.contains("city") && params["city"].is_string())
-           city = params["city"].get<std::string>();
-         else if (params.contains("city"))
-           return {false, "weather_forecast requires city to be a string"};
-
-         if (city.empty())
-           return {false, "Please provide a city."};
-
-         // Determine the number of days for the forecast
-         const int days = params.value("days", 1);
-         if (days < 1 || days > 16)
-           return {false, "weather_forecast supports between 1 and 16 days"};
-
-         // Geocode the city to get its location
-         auto geocoded = geocode_city(city);
-         if (!geocoded)
-           return {false, geocoded.error().message};
-         const auto location = geocoded.value();
-
-         // Fetch the weather forecast for the location
-         auto forecast = fetch_forecast(location, days);
-         if (!forecast)
-           return {false, forecast.error().message};
-
-         // Return the formatted forecast
-         return {true, format_forecast(forecast.value())};
-       }}
+           {{.name = "city",
+             .description = "The city to forecast",
+             .type = "string",
+             .required = true},
+            {.name = "days",
+             .description = "Number of days for the forecast",
+             .type = "integer",
+             .required = false}},
+       .handler = weather_forecast_tool_handler}
   );
 
   auto conversion_tool = juno::sdk::Tool::create(
@@ -314,43 +309,21 @@ int main(int argc, char **argv) {
                       "instead of calculating a temperature conversion yourself.",
        .parameters =
            {
-               {"temperature_value", "The numeric temperature to convert", "number", true},
-               {"source_unit", "The current unit: 'celsius' or 'fahrenheit'", "string", true},
+               {.name = "temperature_value",
+                .description = "The numeric temperature to convert",
+                .type = "number",
+                .required = true},
+               {.name = "source_unit",
+                .description = "The current unit: 'celsius' or 'fahrenheit'",
+                .type = "string",
+                .required = true},
            },
-       .handler = [](const juno::sdk::JsonObject &params) -> juno::sdk::ToolResult {
-         if (!params.contains("temperature_value") || !params["temperature_value"].is_number())
-           return {false, "temperature_value must be a number."};
-         if (!params.contains("source_unit") || !params["source_unit"].is_string())
-           return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
-
-         const double temperature_value = params["temperature_value"].get<double>();
-         const std::string source_unit = params["source_unit"].get<std::string>();
-
-         double result = 0.0;
-         std::string target_unit;
-         if (source_unit == "celsius") {
-           result = temperature_value * (9.0 / 5.0) + 32.0;
-           target_unit = "Fahrenheit";
-         } else if (source_unit == "fahrenheit") {
-           result = (temperature_value - 32.0) * (5.0 / 9.0);
-           target_unit = "Celsius";
-         } else {
-           return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
-         }
-
-         std::ostringstream output;
-         output << "Converted temperature: " << result << ' ' << target_unit;
-         return {true, output.str()};
-       }}
+       .handler = conversion_tool_handler}
   );
 
-  juno::sdk::SteeringOptions steering;
-  for (const auto &path : {std::string{"examples/weather-steering.md"}}) {
-    if (auto document = load_steering_file(path)) {
-      std::cout << "Loaded steering: " << path << " (" << document->content.size() << " bytes)\n";
-      steering.documents.push_back(std::move(*document));
-    }
-  }
+  auto steering = juno::sdk::Steering::create({
+      .files = {"examples/weather-steering.md"},
+  });
 
   // Create an agent that uses the model and the weather forecast tool
   auto weather_agent = juno::sdk::Agent::create({
@@ -359,17 +332,17 @@ int main(int argc, char **argv) {
           "You are WeatherAgent. Answer weather questions concisely using the available tools "
           "and durable memory when useful. For every Celsius/Fahrenheit conversion, always call "
           "temperature_unit_conversion; never calculate the conversion yourself.",
-      .steering = std::move(steering),
-      .generation = {.max_tokens = generation_tokens},
+      .steering = steering,
+      .generation = {.max_tokens = kGenerationTokens},
       .reasoning_effort = juno::sdk::ReasoningEffort::Low,
       .max_inference_turns = 6,
       .compaction = {.max_context_percent = 75.0F, .preserve_recent_turns = 1},
-      .tools = {std::move(forecast_tool), std::move(conversion_tool)},
+      .tools = {forecast_tool, conversion_tool},
   });
   auto conversation = weather_agent.start_conversation();
 
   // Start the interactive playground
-  std::cout << "Weather playground (" << context_size << " context tokens, " << generation_tokens
+  std::cout << "Weather playground (" << kContextSize << " context tokens, " << kGenerationTokens
             << " generation tokens)\n";
   print_help();
 

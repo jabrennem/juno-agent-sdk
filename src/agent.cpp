@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <fstream>
 #include <sstream>
 #include <unordered_set>
 #include <utility>
@@ -184,10 +185,10 @@ std::string memory_store_parameter_description(const MemoryManager &memory) {
 
 std::string initial_system_context(const AgentOptions &options) {
   std::string context = options.system_prompt;
-  for (const auto &document : options.steering.documents) {
+  if (options.steering && !options.steering->system_context().empty()) {
     if (!context.empty())
       context += "\n\n";
-    context += "Steering document: " + document.name + "\n" + document.content;
+    context += options.steering->system_context();
   }
   return context;
 }
@@ -205,6 +206,70 @@ Expected<PromptMetrics> Model::measure(const GenerationRequest &request) {
   for (const auto &tool : request.tools)
     characters += tool.name.size() + tool.description.size() + tool.parameters_json.size();
   return PromptMetrics{(characters + 3) / 4, false};
+}
+
+std::shared_ptr<const Steering> Steering::create(SteeringOptions options) {
+  if (options.max_bytes == 0)
+    throw ConfigurationError(
+        Error{ErrorCode::InvalidConfiguration, "steering.max_bytes must be greater than zero"}
+    );
+
+  for (const auto &path : options.files) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+      throw ConfigurationError(
+          Error{ErrorCode::InvalidConfiguration, "could not open steering file: " + path}
+      );
+
+    std::ostringstream content;
+    content << input.rdbuf();
+    if (input.bad())
+      throw ConfigurationError(
+          Error{ErrorCode::InvalidConfiguration, "could not read steering file: " + path}
+      );
+    options.documents.push_back({.name = path, .content = content.str()});
+  }
+
+  std::size_t steering_bytes = 0;
+  std::unordered_set<std::string> steering_names;
+  for (const auto &document : options.documents) {
+    if (document.name.empty())
+      throw ConfigurationError(
+          Error{ErrorCode::InvalidConfiguration, "steering document name is required"}
+      );
+    if (!steering_names.insert(document.name).second)
+      throw ConfigurationError(
+          Error{
+              ErrorCode::InvalidConfiguration,
+              "steering document names must be unique: " + document.name
+          }
+      );
+    if (document.content.size() > options.max_bytes - std::min(steering_bytes, options.max_bytes))
+      throw ConfigurationError(
+          Error{
+              ErrorCode::InvalidConfiguration, "steering documents exceed the configured byte limit"
+          }
+      );
+    steering_bytes += document.content.size();
+  }
+
+  return std::shared_ptr<const Steering>(new Steering(std::move(options)));
+}
+
+Steering::Steering(SteeringOptions options) : options_(std::move(options)) {
+  for (const auto &document : options_.documents) {
+    if (!system_context_.empty())
+      system_context_ += "\n\n";
+    system_context_ += "Steering document: " + document.name + "\n" + document.content;
+  }
+}
+
+const std::vector<SteeringDocument> &Steering::documents() const {
+  return options_.documents;
+}
+
+const std::string &Steering::system_context() const {
+  return system_context_;
 }
 
 Tool Tool::create(ToolOptions options) {
@@ -261,10 +326,6 @@ Agent Agent::create(AgentOptions options) {
     throw ConfigurationError(
         Error{ErrorCode::InvalidConfiguration, "generation.temperature must be between 0 and 2"}
     );
-  if (options.steering.max_bytes == 0)
-    throw ConfigurationError(
-        Error{ErrorCode::InvalidConfiguration, "steering.max_bytes must be greater than zero"}
-    );
   if (options.compaction.max_context_percent
       && (*options.compaction.max_context_percent < 0.0F
           || *options.compaction.max_context_percent > 100.0F))
@@ -274,29 +335,6 @@ Agent Agent::create(AgentOptions options) {
             "compaction.max_context_percent must be between 0 and 100"
         }
     );
-  std::size_t steering_bytes = 0;
-  std::unordered_set<std::string> steering_names;
-  for (const auto &document : options.steering.documents) {
-    if (document.name.empty())
-      throw ConfigurationError(
-          Error{ErrorCode::InvalidConfiguration, "steering document name is required"}
-      );
-    if (!steering_names.insert(document.name).second)
-      throw ConfigurationError(
-          Error{
-              ErrorCode::InvalidConfiguration,
-              "steering document names must be unique: " + document.name
-          }
-      );
-    if (document.content.size()
-        > options.steering.max_bytes - std::min(steering_bytes, options.steering.max_bytes))
-      throw ConfigurationError(
-          Error{
-              ErrorCode::InvalidConfiguration, "steering documents exceed the configured byte limit"
-          }
-      );
-    steering_bytes += document.content.size();
-  }
   std::unordered_set<std::string> names;
   for (const auto &tool : options.tools) {
     if (tool.definition.name.empty() || (!tool.handler && !tool.json_handler))

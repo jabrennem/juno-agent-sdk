@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <stop_token>
@@ -80,14 +82,20 @@ TEST_CASE("Options factories preserve conversation snapshots") {
   CHECK(conversation.history().front().content == "initial");
 }
 
-TEST_CASE("Steering documents are composed into the initial system context") {
+TEST_CASE("Steering documents are composed once and shared by agents") {
   auto model = std::make_shared<juno::sdk::FakeModel>(
       std::vector<juno::sdk::FakeStep>{juno::sdk::FakeStep::final("done")}
   );
+  auto steering = juno::sdk::Steering::create({
+      .documents = {
+          {.name = "first.md", .content = "first rules"},
+          {.name = "second.md", .content = "second rules"},
+      },
+  });
   auto agent = juno::sdk::Agent::create({
       .model = model,
       .system_prompt = "base",
-      .steering = {.documents = {{"first.md", "first rules"}, {"second.md", "second rules"}}},
+      .steering = steering,
   });
 
   const auto conversation = agent.start_conversation();
@@ -97,22 +105,57 @@ TEST_CASE("Steering documents are composed into the initial system context") {
       == "base\n\nSteering document: first.md\nfirst rules\n\nSteering document: second.md\nsecond "
          "rules"
   );
+
+  auto second_agent = juno::sdk::Agent::create({
+      .model = model,
+      .system_prompt = "second base",
+      .steering = steering,
+  });
+  const auto second_conversation = second_agent.start_conversation();
+  CHECK(
+      second_conversation.history().front().content
+      == "second base\n\nSteering document: first.md\nfirst rules\n\nSteering document: second.md\n"
+         "second rules"
+  );
 }
 
 TEST_CASE("Steering configuration validates names and total size") {
-  auto model = std::make_shared<juno::sdk::FakeModel>(std::vector<juno::sdk::FakeStep>{});
   CHECK_THROWS_AS(
-      juno::sdk::Agent::create({
-          .model = model,
-          .steering = {.documents = {{"", "rules"}}},
-      }),
+      juno::sdk::Steering::create({.documents = {{.name = "", .content = "rules"}}}),
       juno::sdk::ConfigurationError
   );
   CHECK_THROWS_AS(
-      juno::sdk::Agent::create({
-          .model = model,
-          .steering = {.documents = {{"rules.md", "too large"}}, .max_bytes = 3},
+      juno::sdk::Steering::create({
+          .documents = {{.name = "rules.md", .content = "too large"}},
+          .max_bytes = 3,
       }),
+      juno::sdk::ConfigurationError
+  );
+}
+
+TEST_CASE("Steering loads ordered documents from files") {
+  const auto path = std::filesystem::temp_directory_path() / "juno-steering-test.md";
+  {
+    std::ofstream output(path);
+    REQUIRE(output);
+    output << "file rules";
+  }
+
+  auto steering = juno::sdk::Steering::create({
+      .documents = {{.name = "inline.md", .content = "inline rules"}},
+      .files = {path.string()},
+  });
+
+  REQUIRE(steering->documents().size() == 2);
+  CHECK(steering->documents()[0].name == "inline.md");
+  CHECK(steering->documents()[1].name == path.string());
+  CHECK(steering->documents()[1].content == "file rules");
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("Steering rejects unreadable files") {
+  CHECK_THROWS_AS(
+      juno::sdk::Steering::create({.files = {"missing-steering-file.md"}}),
       juno::sdk::ConfigurationError
   );
 }

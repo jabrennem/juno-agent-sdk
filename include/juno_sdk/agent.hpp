@@ -44,6 +44,7 @@ struct ToolParameter {
 struct ToolOptions {
   std::string name;
   std::string description;
+  /** JSON arguments exposed to the model when it calls this tool. */
   std::vector<ToolParameter> parameters;
   JsonToolHandler handler;
 };
@@ -57,7 +58,25 @@ struct SteeringDocument {
 /** Steering documents loaded into the initial system context. */
 struct SteeringOptions {
   std::vector<SteeringDocument> documents;
+  /** UTF-8 text files loaded in order after inline documents. */
+  std::vector<std::string> files;
   std::size_t max_bytes{32 * 1024};
+};
+
+/** Validated, immutable steering shared by agents and conversations. */
+class Steering final {
+public:
+  /** Creates and validates reusable steering documents. */
+  [[nodiscard]] static std::shared_ptr<const Steering> create(SteeringOptions options);
+
+  [[nodiscard]] const std::vector<SteeringDocument> &documents() const;
+  [[nodiscard]] const std::string &system_context() const;
+
+private:
+  explicit Steering(SteeringOptions options);
+
+  SteeringOptions options_;
+  std::string system_context_;
 };
 
 /** A tool definition and the handler that executes it. */
@@ -74,7 +93,7 @@ struct Tool {
 struct AgentOptions {
   std::shared_ptr<Model> model;
   std::string system_prompt;
-  SteeringOptions steering;
+  std::shared_ptr<const Steering> steering;
   GenerationConfig generation;
   ReasoningEffort reasoning_effort{ReasoningEffort::Medium};
   std::size_t max_inference_turns{8};

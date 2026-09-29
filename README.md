@@ -53,17 +53,16 @@ Useful CMake options:
 
 ## Run the playgrounds
 
-Each playground takes a path to a local GGUF model:
+Each playground takes a path to a local GGUF model. The weather playground keeps its token limits
+fixed in `examples/weather_playground.cpp`:
 
 ```sh
 ./build-llama/juno_session_prep_planning_playground /absolute/path/to/model.gguf
 ./build-llama/juno_mix_playground /absolute/path/to/model.gguf
 ./build-llama/juno_weather_playground /absolute/path/to/model.gguf
-# Use a smaller context to exercise automatic compaction quickly.
-./build-llama/juno_weather_playground /absolute/path/to/model.gguf 1024 256
 ```
 
-The optional third argument to the weather playground sets the llama.cpp context size in tokens; its default is 4096. The optional fourth argument sets the generation budget; its default is 512. Pass smaller values such as `1024 256` to trigger compaction sooner. The playground preserves one recent turn so compaction can be exercised quickly. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. The planning and mix playgrounds are independent ad-hoc agent loops with tools restricted to their respective domains. Each supports `/help`, `/clear`, `/history`, and `/quit`. The example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
+The weather playground preserves one recent turn so compaction can be exercised quickly. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. The planning and mix playgrounds are independent ad-hoc agent loops with tools restricted to their respective domains. Each supports `/help`, `/clear`, `/history`, and `/quit`. The example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
 
 ## Unit tests
 
@@ -119,24 +118,24 @@ auto result = conversation.run("Say hello.", [](const juno::sdk::AgentEvent& eve
 });
 ```
 
-User-authored steering can be supplied as ordered documents. Steering is loaded into the initial
-system context for every conversation created by the agent:
+User-authored steering can be supplied as ordered documents. A validated, immutable steering
+object can be shared by many agents and conversations:
 
 ```cpp
+auto steering = juno::sdk::Steering::create({
+    .files = {"production-rules.md", "project-context.md"},
+});
+
 auto agent = juno::sdk::Agent::create({
     .model = model,
     .system_prompt = "Be concise.",
-    .steering = {
-        .documents = {
-            {"production-rules.md", "Prefer conservative changes."},
-            {"project-context.md", "This project targets local agents."},
-        },
-    },
+    .steering = steering,
 });
 ```
 
-Steering documents are ordered as provided and limited to 32 KiB by default. The application owns
-file loading, so it can choose its own global, project, or agent-specific document conventions.
+Steering documents are ordered as provided, precomposed once, and limited to 32 KiB by default.
+Use `files` for UTF-8 text files and `documents` for content supplied directly by the application.
+Inline documents are composed before file-backed documents.
 
 Tools are created and validated independently, and invalid options throw a typed exception:
 
