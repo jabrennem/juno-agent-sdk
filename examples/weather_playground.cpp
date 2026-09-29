@@ -1,4 +1,6 @@
+#include <charconv>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -45,7 +47,9 @@ size_t write_response(char *data, size_t size, size_t count, void *user_data) {
 juno::sdk::Expected<juno::sdk::JsonObject> get_json(const std::string &url) {
   CURL *curl = curl_easy_init();
   if (!curl)
-    return juno::sdk::Error{juno::sdk::ErrorCode::ToolExecutionFailed, "could not initialize HTTP client"};
+    return juno::sdk::Error{
+        juno::sdk::ErrorCode::ToolExecutionFailed, "could not initialize HTTP client"
+    };
 
   std::string response;
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -66,7 +70,8 @@ juno::sdk::Expected<juno::sdk::JsonObject> get_json(const std::string &url) {
     };
   if (status < 200 || status >= 300)
     return juno::sdk::Error{
-        juno::sdk::ErrorCode::ToolExecutionFailed, "weather service returned HTTP " + std::to_string(status)
+        juno::sdk::ErrorCode::ToolExecutionFailed,
+        "weather service returned HTTP " + std::to_string(status)
     };
 
   try {
@@ -83,12 +88,16 @@ juno::sdk::Expected<juno::sdk::JsonObject> get_json(const std::string &url) {
 juno::sdk::Expected<Location> geocode_city(const std::string &city) {
   CURL *curl = curl_easy_init();
   if (!curl)
-    return juno::sdk::Error{juno::sdk::ErrorCode::ToolExecutionFailed, "could not initialize HTTP client"};
+    return juno::sdk::Error{
+        juno::sdk::ErrorCode::ToolExecutionFailed, "could not initialize HTTP client"
+    };
 
   char *encoded = curl_easy_escape(curl, city.c_str(), 0);
   if (!encoded) {
     curl_easy_cleanup(curl);
-    return juno::sdk::Error{juno::sdk::ErrorCode::ToolExecutionFailed, "could not encode city name"};
+    return juno::sdk::Error{
+        juno::sdk::ErrorCode::ToolExecutionFailed, "could not encode city name"
+    };
   }
   const std::string url = "https://geocoding-api.open-meteo.com/v1/search?name="
                           + std::string(encoded) + "&count=1&language=en&format=json";
@@ -152,6 +161,32 @@ bool is_blank(const std::string &text) {
   return text.find_first_not_of(" \t\r\n") == std::string::npos;
 }
 
+std::string format_token_count(const std::size_t value) {
+  std::string result = std::to_string(value);
+  for (std::size_t offset = result.size(); offset > 3; offset -= 3)
+    result.insert(offset - 3, ",");
+  return result;
+}
+
+std::string
+format_threshold_usage(const std::size_t input_tokens, const std::size_t compaction_threshold) {
+  if (compaction_threshold == 0)
+    return "automatic compaction disabled";
+  std::ostringstream output;
+  output << std::fixed << std::setprecision(1)
+         << (100.0 * static_cast<double>(input_tokens) / static_cast<double>(compaction_threshold))
+         << "% of compaction threshold";
+  return output.str();
+}
+
+std::optional<std::size_t> parse_positive_size(const std::string_view value) {
+  std::size_t parsed = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc{} || end != value.data() + value.size() || parsed == 0)
+    return std::nullopt;
+  return parsed;
+}
+
 std::optional<juno::sdk::SteeringDocument> load_steering_file(const std::string &path) {
   std::ifstream input(path);
   if (!input)
@@ -164,7 +199,8 @@ std::optional<juno::sdk::SteeringDocument> load_steering_file(const std::string 
 void print_help() {
   std::cout << "Ask for a weather forecast for any city.\n"
             << "Example: What's the weather in Seattle for five days?\n"
-            << "Commands: /clear, /history, /help, /quit\n";
+            << "Commands: /clear, /compact, /context, /history, /help, /quit\n"
+            << "Automatic compaction: enabled at 75% of the model context budget.\n";
 }
 
 } // namespace
@@ -176,15 +212,38 @@ int main(int argc, char **argv) {
   const auto curl_cleanup = [] { curl_global_cleanup(); };
 
   // Check command-line arguments
-  if (argc != 2) {
-    std::cerr << "Usage: " << argv[0] << " /path/to/model.gguf\n";
+  if (argc < 2 || argc > 4) {
+    std::cerr << "Usage: " << argv[0]
+              << " /path/to/model.gguf [context-tokens] [generation-tokens]\n";
     curl_cleanup();
     return 2;
   }
 
+  std::size_t context_size = 4096;
+  std::size_t generation_tokens = 512;
+  if (argc >= 3) {
+    const auto parsed = parse_positive_size(argv[2]);
+    if (!parsed) {
+      std::cerr << "context-tokens must be a positive integer\n";
+      curl_cleanup();
+      return 2;
+    }
+    context_size = *parsed;
+  }
+  if (argc == 4) {
+    const auto parsed = parse_positive_size(argv[3]);
+    if (!parsed) {
+      std::cerr << "generation-tokens must be a positive integer\n";
+      curl_cleanup();
+      return 2;
+    }
+    generation_tokens = *parsed;
+  }
+
   // Load the LLaMA.cpp model
   auto model = juno::sdk::LlamaCppModel::create({
-    .model_path = argv[1]
+      .model_path = argv[1],
+      .context_size = context_size,
   });
 
   // Create a memory manager for the user's recent weather requests.
@@ -205,48 +264,48 @@ int main(int argc, char **argv) {
   //   },
   //   .add_tool = {
   //     .enabled = true,
-  //     .description = "Save durable weather preferences or recurring locations for later conversations."
+  //     .description = "Save durable weather preferences or recurring locations for later
+  //     conversations."
   //   }
   // });
 
   // Create a tool for fetching the weather forecast
-  auto forecast_tool = juno::sdk::Tool::create({
-    .name = "weather_forecast",
-    .description = "Get weather forecast for a city.",
-    .parameters = {
-      {"city", "The city to forecast", "string", true},
-      {"days", "Number of days for the forecast", "integer", false}
-    },
-    .handler = [](const juno::sdk::JsonObject &params) -> juno::sdk::ToolResult {
-      // Determine the city to fetch the forecast for
-      std::string city;
-      if (params.contains("city") && params["city"].is_string())
-        city = params["city"].get<std::string>();
-      else if (params.contains("city"))
-        return {false, "weather_forecast requires city to be a string"};
+  auto forecast_tool = juno::sdk::Tool::create(
+      {.name = "weather_forecast",
+       .description = "Get weather forecast for a city.",
+       .parameters =
+           {{"city", "The city to forecast", "string", true},
+            {"days", "Number of days for the forecast", "integer", false}},
+       .handler = [](const juno::sdk::JsonObject &params) -> juno::sdk::ToolResult {
+         // Determine the city to fetch the forecast for
+         std::string city;
+         if (params.contains("city") && params["city"].is_string())
+           city = params["city"].get<std::string>();
+         else if (params.contains("city"))
+           return {false, "weather_forecast requires city to be a string"};
 
-      if (city.empty())
-        return {false, "Please provide a city."};
+         if (city.empty())
+           return {false, "Please provide a city."};
 
-      // Determine the number of days for the forecast
-      const int days = params.value("days", 1);
-      if (days < 1 || days > 16)
-        return {false, "weather_forecast supports between 1 and 16 days"};
+         // Determine the number of days for the forecast
+         const int days = params.value("days", 1);
+         if (days < 1 || days > 16)
+           return {false, "weather_forecast supports between 1 and 16 days"};
 
-      // Geocode the city to get its location
-      auto geocoded = geocode_city(city);
-      if (!geocoded)
-        return {false, geocoded.error().message};
-      const auto location = geocoded.value();
+         // Geocode the city to get its location
+         auto geocoded = geocode_city(city);
+         if (!geocoded)
+           return {false, geocoded.error().message};
+         const auto location = geocoded.value();
 
-      // Fetch the weather forecast for the location
-      auto forecast = fetch_forecast(location, days);
-      if (!forecast)
-        return {false, forecast.error().message};
+         // Fetch the weather forecast for the location
+         auto forecast = fetch_forecast(location, days);
+         if (!forecast)
+           return {false, forecast.error().message};
 
-      // Return the formatted forecast
-      return {true, format_forecast(forecast.value())};
-    }}
+         // Return the formatted forecast
+         return {true, format_forecast(forecast.value())};
+       }}
   );
 
   juno::sdk::SteeringOptions steering;
@@ -260,17 +319,22 @@ int main(int argc, char **argv) {
   // Create an agent that uses the model and the weather forecast tool
   auto weather_agent = juno::sdk::Agent::create({
       .model = model,
-      .system_prompt =
-          "You are WeatherAgent. Answer weather questions concisely using the "
-          "available tools and durable memory when useful.",
+      .system_prompt = "You are WeatherAgent. Answer weather questions concisely using the "
+                       "available tools and durable memory when useful.",
       .steering = std::move(steering),
+      .generation =
+          {
+              .max_tokens = generation_tokens,
+          },
+      .reasoning_effort = juno::sdk::ReasoningEffort::None,
       .max_inference_turns = 6,
+      .compaction = {.max_context_percent = 75.0F, .preserve_recent_turns = 1},
       .tools = {std::move(forecast_tool)},
   });
   auto conversation = weather_agent.start_conversation();
 
   // Start the interactive playground
-  std::cout << "Weather playground\n";
+  std::cout << "Weather playground (" << context_size << " context tokens, " << generation_tokens << " generation tokens)\n";
   print_help();
 
   for (std::string input; std::cout << "[weather] > " && std::getline(std::cin, input);) {
@@ -283,6 +347,46 @@ int main(int argc, char **argv) {
     if (input == "/clear") {
       conversation.clear();
       std::cout << "Weather conversation cleared.\n";
+      continue;
+    }
+    if (input == "/compact") {
+      auto result = conversation.compact(
+          {.preserve_recent_turns = 1,
+           .focus = "Preserve user preferences and recent weather context."},
+          [&](const juno::sdk::AgentEvent &event) {
+            if (event.type == juno::sdk::EventType::CompactionStarted)
+              std::cout << "Compacting conversation...\n";
+          }
+      );
+      if (!result) {
+        std::cout << "Compaction failed: " << result.error().message << '\n';
+      } else if (!result.value().compacted) {
+        std::cout << "Compaction made no reduction; model context was left unchanged.\n";
+      } else {
+        std::cout << "Compacted model context from " << result.value().messages_before << " to "
+                  << result.value().messages_after << " messages ("
+                  << result.value().input_tokens_before << " to "
+                  << result.value().input_tokens_after
+                  << " rendered prompt tokens). Full history is preserved.\n";
+      }
+      continue;
+    }
+    if (input == "/context") {
+      const auto usage = conversation.context_usage();
+      if (!usage) {
+        std::cout << "Could not measure context: " << usage.error().message << '\n';
+      } else {
+        std::cout << "Rendered prompt: " << format_token_count(usage.value().input_tokens)
+                  << " tokens ("
+                  << format_threshold_usage(usage.value().input_tokens, usage.value().compaction_threshold)
+                  << ")\n"
+                  << "Compaction threshold: "
+                  << format_token_count(usage.value().compaction_threshold) << " tokens\n"
+                  << "Output reservation: " << format_token_count(usage.value().output_reservation)
+                  << " tokens\n"
+                  << "Context capacity: " << format_token_count(usage.value().context_capacity)
+                  << " tokens\n";
+      }
       continue;
     }
     if (input == "/history") {
@@ -302,9 +406,14 @@ int main(int argc, char **argv) {
       } else if (event.type == juno::sdk::EventType::TextDelta) {
         std::cout << kBlue << event.text << kReset << std::flush;
       } else if (event.type == juno::sdk::EventType::ToolStarted) {
-        std::cout << kYellow << "tool: " << event.tool_call.name << "(" << event.tool_call.arguments_json << ")" << kReset << '\n';
+        std::cout << kYellow << "tool: " << event.tool_call.name << "("
+                  << event.tool_call.arguments_json << ")" << kReset << '\n';
       } else if (event.type == juno::sdk::EventType::ToolCompleted) {
         std::cout << kYellow << "tool completed: " << event.tool_call.name << kReset << '\n';
+      } else if (event.type == juno::sdk::EventType::CompactionStarted) {
+        std::cout << kYellow << "Compacting conversation..." << kReset << '\n';
+      } else if (event.type == juno::sdk::EventType::CompactionCompleted) {
+        std::cout << kYellow << "Conversation compacted." << kReset << '\n';
       }
     });
     if (!result)

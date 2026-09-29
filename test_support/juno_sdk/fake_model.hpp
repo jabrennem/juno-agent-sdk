@@ -24,19 +24,32 @@ struct FakeStep {
 };
 
 class FakeModel final : public Model {
- public:
+public:
   explicit FakeModel(std::vector<FakeStep> script);
 
-  Expected<GenerationResponse> generate(const GenerationRequest& request,
-                                        const EventCallback& callback,
-                                        std::stop_token stop_token) override;
-  [[nodiscard]] std::size_t remaining_steps() const;
-  [[nodiscard]] const std::vector<ReasoningEffort>& reasoning_effort_requests() const;
+  std::size_t context_size() const override {
+    return context_size_;
+  }
 
- private:
+  Expected<PromptMetrics> measure(const GenerationRequest &request) override;
+  Expected<GenerationResponse> generate(
+      const GenerationRequest &request,
+      const EventCallback &callback,
+      std::stop_token stop_token
+  ) override;
+  [[nodiscard]] std::size_t remaining_steps() const;
+  [[nodiscard]] const std::vector<ReasoningEffort> &reasoning_effort_requests() const;
+  [[nodiscard]] const std::vector<std::vector<Message>> &requests() const;
+  void set_context_size(std::size_t context_size);
+  void set_prompt_overhead_tokens(std::size_t prompt_overhead_tokens);
+
+private:
   std::vector<FakeStep> script_;
   std::size_t next_step_{0};
   std::vector<ReasoningEffort> reasoning_effort_requests_;
+  std::vector<std::vector<Message>> requests_;
+  std::size_t context_size_{4096};
+  std::size_t prompt_overhead_tokens_{0};
 };
 
-}  // namespace juno::sdk
+} // namespace juno::sdk

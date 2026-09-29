@@ -78,6 +78,7 @@ struct AgentOptions {
   GenerationConfig generation;
   ReasoningEffort reasoning_effort{ReasoningEffort::Medium};
   std::size_t max_inference_turns{8};
+  CompactionOptions compaction;
   std::vector<Tool> tools;
   std::shared_ptr<MemoryManager> memory;
 };
@@ -90,20 +91,32 @@ public:
   [[nodiscard]] Expected<RunResult>
   run(std::string_view user_message, EventCallback callback = {}, std::stop_token stop_token = {});
 
+  /** Compacts the model-facing context while retaining the full transcript. */
+  [[nodiscard]] Expected<CompactionResult> compact(
+      CompactionOptions options = {},
+      EventCallback callback = {},
+      std::stop_token stop_token = {}
+  );
+
   // Returns the history of messages in this conversation.
   [[nodiscard]] const std::vector<Message> &history() const;
+  /** Returns rendered model-facing context usage before temporary memory injection. */
+  [[nodiscard]] Expected<ContextUsage> context_usage() const;
   void clear();
 
 private:
   friend class Agent;
-  Conversation(std::shared_ptr<Model> model,
-               std::shared_ptr<const AgentOptions> options,
-               std::shared_ptr<MemoryManager> memory);
+  Conversation(
+      std::shared_ptr<Model> model,
+      std::shared_ptr<const AgentOptions> options,
+      std::shared_ptr<MemoryManager> memory
+  );
 
   std::shared_ptr<Model> model_;
   std::shared_ptr<const AgentOptions> options_;
   std::shared_ptr<MemoryManager> memory_;
   std::vector<Message> history_;
+  std::vector<Message> context_;
 };
 
 /** Reusable model and immutable behavior used to create conversations. */
@@ -121,7 +134,6 @@ public:
   /** Adds a tool for conversations created after this call. */
   void add_tool(Tool tool);
   void set_memory(std::shared_ptr<MemoryManager> memory);
-
 
 private:
   Agent(AgentOptions options);

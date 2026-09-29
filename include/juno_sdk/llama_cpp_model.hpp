@@ -47,9 +47,6 @@ public:
   /** Creates a new LlamaCppModel instance with the given configuration. */
   static std::shared_ptr<LlamaCppModel> create(LlamaCppOptions options);
 
-  /** Convenience factory for the common model-path-only case. */
-  static std::shared_ptr<LlamaCppModel> create(const std::string &model_path);
-
   /** Destroys the LlamaCppModel instance. */
   ~LlamaCppModel() override;
 
@@ -59,15 +56,18 @@ public:
 
   /** Generates text based on the given request, invoking the callback for
    * events. */
-  Expected<GenerationResponse> generate(const GenerationRequest &request,
-                                        const EventCallback &callback,
-                                        std::stop_token stop_token) override;
+  std::size_t context_size() const override;
+  Expected<PromptMetrics> measure(const GenerationRequest &request) override;
+  Expected<GenerationResponse> generate(
+      const GenerationRequest &request,
+      const EventCallback &callback,
+      std::stop_token stop_token
+  ) override;
 
 private:
   struct Impl;
   explicit LlamaCppModel(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
-
 
 } // namespace juno::sdk
