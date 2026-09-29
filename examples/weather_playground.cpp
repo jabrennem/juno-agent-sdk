@@ -308,6 +308,42 @@ int main(int argc, char **argv) {
        }}
   );
 
+  auto conversion_tool = juno::sdk::Tool::create(
+      {.name = "temperature_unit_conversion",
+       .description = "Convert a temperature between Celsius and Fahrenheit. Always use this tool "
+                      "instead of calculating a temperature conversion yourself.",
+       .parameters =
+           {
+               {"temperature_value", "The numeric temperature to convert", "number", true},
+               {"source_unit", "The current unit: 'celsius' or 'fahrenheit'", "string", true},
+           },
+       .handler = [](const juno::sdk::JsonObject &params) -> juno::sdk::ToolResult {
+         if (!params.contains("temperature_value") || !params["temperature_value"].is_number())
+           return {false, "temperature_value must be a number."};
+         if (!params.contains("source_unit") || !params["source_unit"].is_string())
+           return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
+
+         const double temperature_value = params["temperature_value"].get<double>();
+         const std::string source_unit = params["source_unit"].get<std::string>();
+
+         double result = 0.0;
+         std::string target_unit;
+         if (source_unit == "celsius") {
+           result = temperature_value * (9.0 / 5.0) + 32.0;
+           target_unit = "Fahrenheit";
+         } else if (source_unit == "fahrenheit") {
+           result = (temperature_value - 32.0) * (5.0 / 9.0);
+           target_unit = "Celsius";
+         } else {
+           return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
+         }
+
+         std::ostringstream output;
+         output << "Converted temperature: " << result << ' ' << target_unit;
+         return {true, output.str()};
+       }}
+  );
+
   juno::sdk::SteeringOptions steering;
   for (const auto &path : {std::string{"examples/weather-steering.md"}}) {
     if (auto document = load_steering_file(path)) {
@@ -319,22 +355,22 @@ int main(int argc, char **argv) {
   // Create an agent that uses the model and the weather forecast tool
   auto weather_agent = juno::sdk::Agent::create({
       .model = model,
-      .system_prompt = "You are WeatherAgent. Answer weather questions concisely using the "
-                       "available tools and durable memory when useful.",
+      .system_prompt =
+          "You are WeatherAgent. Answer weather questions concisely using the available tools "
+          "and durable memory when useful. For every Celsius/Fahrenheit conversion, always call "
+          "temperature_unit_conversion; never calculate the conversion yourself.",
       .steering = std::move(steering),
-      .generation =
-          {
-              .max_tokens = generation_tokens,
-          },
-      .reasoning_effort = juno::sdk::ReasoningEffort::None,
+      .generation = {.max_tokens = generation_tokens},
+      .reasoning_effort = juno::sdk::ReasoningEffort::Low,
       .max_inference_turns = 6,
       .compaction = {.max_context_percent = 75.0F, .preserve_recent_turns = 1},
-      .tools = {std::move(forecast_tool)},
+      .tools = {std::move(forecast_tool), std::move(conversion_tool)},
   });
   auto conversation = weather_agent.start_conversation();
 
   // Start the interactive playground
-  std::cout << "Weather playground (" << context_size << " context tokens, " << generation_tokens << " generation tokens)\n";
+  std::cout << "Weather playground (" << context_size << " context tokens, " << generation_tokens
+            << " generation tokens)\n";
   print_help();
 
   for (std::string input; std::cout << "[weather] > " && std::getline(std::cin, input);) {
@@ -378,7 +414,9 @@ int main(int argc, char **argv) {
       } else {
         std::cout << "Rendered prompt: " << format_token_count(usage.value().input_tokens)
                   << " tokens ("
-                  << format_threshold_usage(usage.value().input_tokens, usage.value().compaction_threshold)
+                  << format_threshold_usage(
+                         usage.value().input_tokens, usage.value().compaction_threshold
+                     )
                   << ")\n"
                   << "Compaction threshold: "
                   << format_token_count(usage.value().compaction_threshold) << " tokens\n"
@@ -400,7 +438,7 @@ int main(int argc, char **argv) {
     std::string forecast_fallback;
     auto result = conversation.run(input, [&](const juno::sdk::AgentEvent &event) {
       if (event.type == juno::sdk::EventType::Prompt) {
-        std::cout << kMagenta << event.text << kReset << std::flush;
+        // std::cout << kMagenta << event.text << kReset << std::flush;
       } else if (event.type == juno::sdk::EventType::ReasoningDelta) {
         std::cout << kCyan << event.text << kReset << std::flush;
       } else if (event.type == juno::sdk::EventType::TextDelta) {
