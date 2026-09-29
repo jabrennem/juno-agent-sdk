@@ -43,7 +43,20 @@ namespace
         << "Describe the raw-files folder and mix template you want to plan "
            "from.\n"
         << "Example: Plan session prep for ./stems using ./templates/rock-mix.\n"
-        << "Commands: /clear, /history, /help, /quit\n";
+        << "Commands: /clear, /history, /tools, /help, /quit\n";
+  }
+
+  void print_tools(const Agent &agent)
+  {
+    const auto tools = agent.tool_definitions();
+    if (tools.empty())
+    {
+      std::cout << "No tools configured.\n";
+      return;
+    }
+    std::cout << "Available tools:\n";
+    for (const auto &tool : tools)
+      std::cout << "- " << tool.name << ": " << tool.description << '\n';
   }
 
 } // namespace
@@ -87,6 +100,11 @@ int main(int argc, char **argv)
     if (input == "/history")
     {
       std::cout << conversation.history().size() << " messages\n";
+      continue;
+    }
+    if (input == "/tools")
+    {
+      print_tools(agent);
       continue;
     }
     if (input.empty())

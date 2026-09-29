@@ -92,10 +92,14 @@ std::string tool_protocol(const std::span<const ToolDefinition> tools) {
       "\n\n<tools>\nAvailable tools (JSON): " + definitions.dump() + "\n</tools>\n";
   if (has_memory_tool) {
     protocol += R"(<memory_policy>
-Use durable memory selectively. Save information only when the user explicitly asks you to
-remember it, or when it is a stable preference, personal fact, or recurring context likely to
-improve a future conversation. Do not save one-off requests, temporary forecasts, current
-conditions, or facts that are only useful for the current task. When in doubt, do not save.
+Use durable memory selectively. Automatically save stable facts the user volunteers about
+themselves, including their preferences, identity, recurring context, and standing instructions,
+when those facts are likely to improve a future conversation. Also save information when the
+user explicitly asks you to remember it. Do not save one-off requests, temporary forecasts,
+current conditions, or facts that are only useful for the current task. When in doubt, do not
+save. Before updating an existing memory file, read it first and write back the complete merged
+Markdown document so existing memories are preserved. Prefer MEMORY.md unless a more specific
+Markdown file is clearly appropriate.
 </memory_policy>
 )";
   }

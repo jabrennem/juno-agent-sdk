@@ -7,7 +7,7 @@ It supports
 - intuitive modern API design
 - llama.cpp embedded integration for local gguf files
 - tool integration
-- auto-memory
+- Markdown-backed file memory
 
 ## Prerequisites
 
@@ -62,7 +62,7 @@ fixed in `examples/weather_playground.cpp`:
 ./build-llama/juno_weather_playground /absolute/path/to/model.gguf
 ```
 
-The weather playground preserves one recent turn so compaction can be exercised quickly. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. The planning and mix playgrounds are independent ad-hoc agent loops with tools restricted to their respective domains. Each supports `/help`, `/clear`, `/history`, and `/quit`. The example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
+The weather playground preserves one recent turn so compaction can be exercised quickly. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. The planning and mix playgrounds are independent ad-hoc agent loops with tools restricted to their respective domains. Each supports `/help`, `/clear`, `/history`, `/tools`, and `/quit`. The example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
 
 ## Unit tests
 
@@ -250,7 +250,7 @@ Juno uses a small JSON tool protocol rather than provider-native tool calling. T
 - Conversations are not reentrant or thread-safe. Use one conversation per concurrent chat.
 - Calls and event callbacks run synchronously, in model order.
 - Tool errors—including unknown tools and handler exceptions—are appended as tool-result messages so a model can recover on its next turn.
-- The built-in JSON memory store provides basic durable recall; it is intentionally a simple local store with keyword matching, not a semantic or multi-process memory backend.
+- The built-in memory store exposes constrained Markdown file operations inside its configured directory. Agents are instructed to persist stable user-provided facts and preferences, while avoiding transient task data. It is not a semantic or multi-process memory system.
 - `LlamaCppModel` is in-process and uses RAII to manage the model and per-run inference contexts. Its llama.cpp dependency is isolated from the SDK’s public headers.
 - API-key/cloud models are not implemented yet; implement `Model` to add one without changing `Agent` or `Conversation`.
 

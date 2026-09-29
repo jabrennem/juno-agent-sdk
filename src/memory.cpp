@@ -1,114 +1,106 @@
 #include "juno_sdk/memory.hpp"
 
 #include <algorithm>
-#include <cctype>
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <unordered_set>
+#include <sstream>
+#include <utility>
 
 namespace juno::sdk {
 namespace {
 
-class JsonMemoryStore final : public MemoryStore {
+class MarkdownMemoryStore final : public MemoryStore {
 public:
-  explicit JsonMemoryStore(MemoryStoreOptions options)
+  explicit MarkdownMemoryStore(MemoryStoreOptions options)
       : name_(std::move(options.name)), description_(std::move(options.description)),
-        path_(std::move(options.path)) {}
+        directory_(expand_user(options.path)) {}
 
-  const std::string &name() const override {
-    return name_;
+  const std::string &name() const override { return name_; }
+  const std::string &description() const override { return description_; }
+
+  Expected<std::string> read_file(std::string_view relative) const override {
+    auto path = safe_path(relative);
+    if (!path)
+      return path.error();
+    std::ifstream input(path.value(), std::ios::binary);
+    if (!input)
+      return Error{ErrorCode::ToolExecutionFailed,
+                   "could not read memory file: " + std::string(relative)};
+    std::ostringstream content;
+    content << input.rdbuf();
+    return content.str();
   }
 
-  const std::string &description() const override {
-    return description_;
-  }
-
-  Expected<void> remember(MemoryEntry entry) override {
-    auto entries = load();
-    if (!entries)
-      return entries.error();
-    if (entry.id.empty()) {
-      entry.id = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-    }
-    entries.value().push_back(std::move(entry));
+  Expected<void> write_file(std::string_view relative, std::string_view content) override {
+    auto path = safe_path(relative);
+    if (!path)
+      return path.error();
     try {
-      const std::filesystem::path path = expand_user(path_);
-      if (!path.parent_path().empty())
-        std::filesystem::create_directories(path.parent_path());
-      std::ofstream output(path);
+      std::filesystem::create_directories(directory_);
+      std::ofstream output(path.value(), std::ios::binary | std::ios::trunc);
       if (!output)
         return Error{ErrorCode::ToolExecutionFailed,
-                     "could not open memory store: " + path.string()};
-      output << entries_to_json(entries.value()).dump(2) << '\n';
+                     "could not write memory file: " + path.value().string()};
+      output << content;
     } catch (const std::exception &error) {
       return Error{ErrorCode::ToolExecutionFailed,
-                   std::string{"could not write memory store: "} + error.what()};
+                   std::string{"could not write memory file: "} + error.what()};
     }
     return {};
   }
 
-  Expected<std::vector<MemoryEntry>> recall(std::string_view query,
-                                            std::size_t max_results) const override {
-    auto entries = load();
-    if (!entries)
-      return entries.error();
-    std::vector<std::pair<int, MemoryEntry>> scored_matches;
-    const auto query_terms = terms(query);
-    for (auto entry = entries.value().rbegin(); entry != entries.value().rend(); ++entry) {
-      if (query.empty()) {
-        scored_matches.emplace_back(1, *entry);
-        continue;
-      }
+  Expected<void> rename_file(std::string_view from, std::string_view to) override {
+    auto source = safe_path(from);
+    auto destination = safe_path(to);
+    if (!source)
+      return source.error();
+    if (!destination)
+      return destination.error();
+    try {
+      std::filesystem::rename(source.value(), destination.value());
+    } catch (const std::exception &error) {
+      return Error{ErrorCode::ToolExecutionFailed,
+                   std::string{"could not rename memory file: "} + error.what()};
+    }
+    return {};
+  }
 
-      const std::string searchable = entry->content + " " + entry->metadata.dump();
-      const auto searchable_terms = terms(searchable);
-      int score = 0;
-      for (const auto &term : query_terms)
-        if (searchable_terms.contains(term))
-          ++score;
-      if (score > 0)
-        scored_matches.emplace_back(score, *entry);
+  Expected<void> delete_file(std::string_view relative) override {
+    auto path = safe_path(relative);
+    if (!path)
+      return path.error();
+    try {
+      if (!std::filesystem::remove(path.value()))
+        return Error{ErrorCode::ToolExecutionFailed,
+                     "memory file does not exist: " + std::string(relative)};
+    } catch (const std::exception &error) {
+      return Error{ErrorCode::ToolExecutionFailed,
+                   std::string{"could not delete memory file: "} + error.what()};
     }
-    std::stable_sort(scored_matches.begin(),
-                     scored_matches.end(),
-                     [](const auto &left, const auto &right) { return left.first > right.first; });
-    std::vector<MemoryEntry> matches;
-    for (const auto &[score, entry] : scored_matches) {
-      (void)score;
-      matches.push_back(entry);
-      if (matches.size() >= max_results)
-        break;
+    return {};
+  }
+
+  Expected<std::vector<std::string>> list_files() const override {
+    std::vector<std::string> result;
+    try {
+      if (!std::filesystem::exists(directory_))
+        return result;
+      for (const auto &entry : std::filesystem::directory_iterator(directory_))
+        if (entry.is_regular_file() && entry.path().extension() == ".md")
+          result.push_back(entry.path().filename().string());
+      std::sort(result.begin(), result.end());
+    } catch (const std::exception &error) {
+      return Error{ErrorCode::ToolExecutionFailed,
+                   std::string{"could not list memory files: "} + error.what()};
     }
-    return matches;
+    return result;
   }
 
 private:
   std::string name_;
   std::string description_;
-  std::string path_;
-
-  static std::unordered_set<std::string> terms(std::string_view text) {
-    std::unordered_set<std::string> result;
-    std::string term;
-    for (const char character : text) {
-      if (std::isalnum(static_cast<unsigned char>(character))) {
-        term.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-      } else if (!term.empty()) {
-        if (term == "hometown")
-          term = "home";
-        if (term.size() >= 3)
-          result.insert(term);
-        term.clear();
-      }
-    }
-    if (term == "hometown")
-      term = "home";
-    if (term.size() >= 3)
-      result.insert(term);
-    return result;
-  }
+  std::filesystem::path directory_;
 
   static std::filesystem::path expand_user(const std::string &path) {
     if (path.rfind("~/", 0) != 0)
@@ -117,129 +109,85 @@ private:
     return home ? std::filesystem::path(home) / path.substr(2) : std::filesystem::path(path);
   }
 
-  Expected<std::vector<MemoryEntry>> load() const {
-    try {
-      const std::filesystem::path path = expand_user(path_);
-      if (!std::filesystem::exists(path))
-        return std::vector<MemoryEntry>{};
-      std::ifstream input(path);
-      nlohmann::json json;
-      input >> json;
-      std::vector<MemoryEntry> entries;
-      for (const auto &value : json) {
-        entries.push_back({value.value("id", ""),
-                           value.value("content", ""),
-                           value.value("metadata", nlohmann::json::object())});
-      }
-      return entries;
-    } catch (const std::exception &error) {
+  Expected<std::filesystem::path> safe_path(std::string_view relative) const {
+    const std::filesystem::path requested(relative);
+    if (relative.empty() || requested.is_absolute() || requested.filename() != requested
+        || requested.extension() != ".md" || requested.filename() == ".")
       return Error{ErrorCode::ToolExecutionFailed,
-                   std::string{"could not read memory store: "} + error.what()};
-    }
-  }
-
-  static nlohmann::json entries_to_json(const std::vector<MemoryEntry> &entries) {
-    nlohmann::json json = nlohmann::json::array();
-    for (const auto &entry : entries)
-      json.push_back({{"id", entry.id}, {"content", entry.content}, {"metadata", entry.metadata}});
-    return json;
+                   "memory file path must be a single .md filename"};
+    return directory_ / requested;
   }
 };
 
-std::vector<std::shared_ptr<MemoryStore>> selected(const MemoryManagerOptions &options,
-                                                   const std::vector<std::string> &names) {
-  if (names.empty())
-    return options.stores;
-  std::vector<std::shared_ptr<MemoryStore>> result;
+template <typename Operation>
+auto one_store(const MemoryManagerOptions &options, const std::string &name, Operation operation)
+    -> decltype(operation(std::declval<MemoryStore &>())) {
   for (const auto &store : options.stores)
-    if (std::find(names.begin(), names.end(), store->name()) != names.end())
-      result.push_back(store);
-  return result;
+    if (name.empty() || store->name() == name)
+      return operation(*store);
+  using Result = decltype(operation(std::declval<MemoryStore &>()));
+  return Result{Error{ErrorCode::ToolExecutionFailed, "memory store not found: " + name}};
 }
 
 } // namespace
 
-MemoryManager::MemoryManager(MemoryManagerOptions options) : options_(std::move(options)) {
-  if (options_.search_tool.name.empty())
-    options_.search_tool.name = "search_memory";
-  if (options_.search_tool.description.empty())
-    options_.search_tool.description = "Search durable memory for relevant facts.";
-  if (options_.add_tool.name.empty())
-    options_.add_tool.name = "add_memory";
-  if (options_.add_tool.description.empty())
-    options_.add_tool.description =
-        "Save a durable user fact, preference, or recurring context for future conversations.";
-}
+MemoryManager::MemoryManager(MemoryManagerOptions options) : options_(std::move(options)) {}
 
 MemoryManager &MemoryManager::add_store(std::shared_ptr<MemoryStore> store) {
   options_.stores.push_back(std::move(store));
   return *this;
 }
 
-MemoryManager &MemoryManager::set_policy(MemoryPolicy policy) {
-  options_.policy = policy;
-  return *this;
-}
-
-const MemoryPolicy &MemoryManager::policy() const {
-  return options_.policy;
-}
-
-const MemoryToolConfig &MemoryManager::search_tool() const {
-  return options_.search_tool;
-}
-
-const MemoryToolConfig &MemoryManager::add_tool() const {
-  return options_.add_tool;
+bool MemoryManager::file_tools_enabled() const {
+  return options_.file_tools_enabled;
 }
 
 const std::vector<std::shared_ptr<MemoryStore>> &MemoryManager::stores() const {
   return options_.stores;
 }
 
-Expected<void> MemoryManager::remember(MemoryEntry entry, const std::vector<std::string> &stores) {
-  auto targets = selected(options_, stores);
-  for (const auto &store : targets) {
-    auto result = store->remember(entry);
-    if (!result)
-      return result.error();
-  }
-  return {};
+Expected<std::string> MemoryManager::read_file(std::string_view path,
+                                                const std::string &store) const {
+  return one_store(options_, store, [path](MemoryStore &memory) { return memory.read_file(path); });
 }
 
-Expected<std::vector<MemoryEntry>>
-MemoryManager::recall(std::string_view query, const std::vector<std::string> &stores) const {
-  if (!options_.policy.auto_recall_enabled)
-    return std::vector<MemoryEntry>{};
-  std::vector<MemoryEntry> result;
-  for (const auto &store : selected(options_, stores)) {
-    auto entries = store->recall(query, options_.policy.max_recalled_memories);
-    if (!entries)
-      return entries.error();
-    result.insert(result.end(), entries.value().begin(), entries.value().end());
-  }
-  if (result.size() > options_.policy.max_recalled_memories)
-    result.resize(options_.policy.max_recalled_memories);
-  return result;
+Expected<void> MemoryManager::write_file(std::string_view path, std::string_view content,
+                                         const std::string &store) {
+  return one_store(options_, store, [path, content](MemoryStore &memory) {
+    return memory.write_file(path, content);
+  });
 }
 
-std::shared_ptr<MemoryManager> create_memory_manager(MemoryManagerOptions options) {
+Expected<void> MemoryManager::rename_file(std::string_view from, std::string_view to,
+                                          const std::string &store) {
+  return one_store(options_, store, [from, to](MemoryStore &memory) {
+    return memory.rename_file(from, to);
+  });
+}
+
+Expected<void> MemoryManager::delete_file(std::string_view path, const std::string &store) {
+  return one_store(options_, store, [path](MemoryStore &memory) { return memory.delete_file(path); });
+}
+
+std::shared_ptr<MemoryManager> MemoryManager::create(MemoryManagerOptions options) {
   return std::make_shared<MemoryManager>(std::move(options));
 }
 
-std::shared_ptr<MemoryStore> create_memory_store(const std::string &name, const std::string &path) {
-  return create_memory_store(MemoryStoreOptions{.name = name, .path = path});
+std::shared_ptr<MemoryStore> MemoryStore::create(const std::string &name,
+                                                 const std::string &path) {
+  return create(MemoryStoreOptions{.name = name, .path = path});
 }
 
-std::shared_ptr<MemoryStore> create_memory_store(MemoryStoreOptions options) {
-  return std::make_shared<JsonMemoryStore>(std::move(options));
+std::shared_ptr<MemoryStore> MemoryStore::create(MemoryStoreOptions options) {
+  if (options.description.empty())
+    options.description = "Markdown files in a restricted memory directory.";
+  return std::make_shared<MarkdownMemoryStore>(std::move(options));
 }
 
-std::shared_ptr<MemoryStore> create_memory_store(const std::string &path) {
+std::shared_ptr<MemoryStore> MemoryStore::create(const std::string &path) {
   const auto filename = std::filesystem::path(path).filename().string();
   const auto name = std::filesystem::path(filename).stem().string();
-  return create_memory_store(name.empty() ? "memory" : name, path);
+  return create(name.empty() ? "memory" : name, path);
 }
-
 
 } // namespace juno::sdk

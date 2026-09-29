@@ -150,6 +150,8 @@ public:
   Agent &operator=(const Agent &) = default;
 
   [[nodiscard]] Conversation start_conversation() const;
+  /** Returns the definitions of tools available to new conversations. */
+  [[nodiscard]] std::vector<ToolDefinition> tool_definitions() const;
   /** Adds a tool for conversations created after this call. */
   void add_tool(Tool tool);
   void set_memory(std::shared_ptr<MemoryManager> memory);

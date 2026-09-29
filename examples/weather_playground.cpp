@@ -181,8 +181,19 @@ format_threshold_usage(const std::size_t input_tokens, const std::size_t compact
 void print_help() {
   std::cout << "Ask for a weather forecast for any city.\n"
             << "Example: What's the weather in Seattle for five days?\n"
-            << "Commands: /clear, /compact, /context, /history, /help, /quit\n"
+            << "Commands: /clear, /compact, /context, /history, /tools, /help, /quit\n"
             << "Automatic compaction: enabled at 75% of the model context budget.\n";
+}
+
+void print_tools(const juno::sdk::Agent &agent) {
+  const auto tools = agent.tool_definitions();
+  if (tools.empty()) {
+    std::cout << "No tools configured.\n";
+    return;
+  }
+  std::cout << "Available tools:\n";
+  for (const auto &tool : tools)
+    std::cout << "- " << tool.name << ": " << tool.description << '\n';
 }
 
 // Callback function for the temperature_unit_conversion tool
@@ -264,28 +275,15 @@ int main(int argc, char **argv) {
       .context_size = kContextSize,
   });
 
-  // Create a memory manager for the user's recent weather requests.
-  // auto recent_forecasts_store = create_memory_store({
-  //   .name = "weather",
-  //   .path = "~/.juno/memory/recent_forecasts.json",
-  //   .description = "Recent cities and weather requests.",
-  // });
-  // auto weather_memory = create_memory_manager({
-  //   .stores = {recent_forecasts_store},
-  //   .policy = {
-  //     .auto_recall_enabled = false,
-  //     .max_recalled_memories = 5
-  //   },
-  //   .search_tool = {
-  //     .enabled = true,
-  //     .description = "Look up recent forecasts for locations when useful."
-  //   },
-  //   .add_tool = {
-  //     .enabled = true,
-  //     .description = "Save durable weather preferences or recurring locations for later
-  //     conversations."
-  //   }
-  // });
+  // Keep durable weather preferences and recurring locations in an inspectable Markdown store.
+  auto recent_forecasts_store = juno::sdk::MemoryStore::create({
+      .name = "weather",
+      .path = "~/.juno/memory/weather",
+      .description = "Recent cities, weather preferences, and recurring weather requests.",
+  });
+  auto weather_memory = juno::sdk::MemoryManager::create({
+      .stores = {recent_forecasts_store},
+  });
 
   // Create a tool for fetching the weather forecast
   auto forecast_tool = juno::sdk::Tool::create(
@@ -338,6 +336,7 @@ int main(int argc, char **argv) {
       .max_inference_turns = 6,
       .compaction = {.max_context_percent = 75.0F, .preserve_recent_turns = 1},
       .tools = {forecast_tool, conversion_tool},
+      .memory = weather_memory,
   });
   auto conversation = weather_agent.start_conversation();
 
@@ -402,6 +401,10 @@ int main(int argc, char **argv) {
     }
     if (input == "/history") {
       std::cout << conversation.history().size() << " messages\n";
+      continue;
+    }
+    if (input == "/tools") {
+      print_tools(weather_agent);
       continue;
     }
     if (input.empty())

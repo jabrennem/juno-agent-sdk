@@ -87,17 +87,8 @@ std::vector<ToolDefinition> tool_definitions(const AgentOptions &options) {
   return definitions;
 }
 
-std::vector<Message>
-model_history(const std::vector<Message> &context, const std::string_view memory_context = {}) {
-  std::vector<Message> result = context;
-  if (memory_context.empty())
-    return result;
-  if (!result.empty() && result.front().role == Role::System) {
-    result.front().content += "\n\n" + std::string(memory_context);
-  } else {
-    result.insert(result.begin(), Message{Role::System, std::string(memory_context)});
-  }
-  return result;
+std::vector<Message> model_history(const std::vector<Message> &context) {
+  return context;
 }
 
 std::vector<Message> prompt_measurement_history(const std::vector<Message> &context) {
@@ -353,10 +344,22 @@ Agent Agent::create(AgentOptions options) {
 }
 
 Agent::Agent(AgentOptions options)
-    : model_(options.model), options_(std::move(options)), memory_(options_.memory) {}
+    : model_(options.model), options_(std::move(options)), memory_(options_.memory) {
+  if (memory_)
+    set_memory(memory_);
+}
 
 Conversation Agent::start_conversation() const {
   return Conversation{model_, std::make_shared<const AgentOptions>(options_), memory_};
+}
+
+std::vector<ToolDefinition> Agent::tool_definitions() const {
+  // Return a snapshot without duplicating handlers or exposing mutable state.
+  std::vector<ToolDefinition> definitions;
+  definitions.reserve(options_.tools.size());
+  for (const auto &tool : options_.tools)
+    definitions.push_back(tool.definition);
+  return definitions;
 }
 
 void Agent::add_tool(Tool tool) {
@@ -381,72 +384,70 @@ void Agent::add_tool(Tool tool) {
 void Agent::set_memory(std::shared_ptr<MemoryManager> memory) {
   memory_ = std::move(memory);
   options_.memory = memory_;
-  if (memory_ && memory_->search_tool().enabled) {
-    const auto &config = memory_->search_tool();
-    const bool already_registered =
-        std::any_of(options_.tools.begin(), options_.tools.end(), [&config](const Tool &tool) {
-          return tool.definition.name == config.name;
+  if (memory_ && memory_->file_tools_enabled()) {
+    const auto register_file_tool = [this](std::string name, std::string description,
+                                           std::vector<ToolParameter> parameters,
+                                           JsonToolHandler handler) {
+      const bool already_registered = std::any_of(
+          options_.tools.begin(), options_.tools.end(), [&name](const Tool &tool) {
+            return tool.definition.name == name;
+          });
+      if (!already_registered)
+        add_tool(Tool::create({.name = std::move(name),
+                               .description = std::move(description),
+                               .parameters = std::move(parameters),
+                               .handler = std::move(handler)}));
+    };
+    const auto file_parameters = std::vector<ToolParameter>{
+        {"path", "A Markdown filename in the memory directory", "string", true},
+        {"store", memory_store_parameter_description(*memory_), "string", false}};
+    register_file_tool(
+        "read_memory_file", "Read a Markdown file from durable memory.", file_parameters,
+        [memory = memory_](const JsonObject &params) -> ToolResult {
+          if (!params.contains("path") || !params["path"].is_string())
+            return {false, "read_memory_file requires a string path"};
+          const auto result = memory->read_file(params["path"].get<std::string>(),
+                                                params.value("store", ""));
+          return result ? ToolResult{true, result.value()} : ToolResult{false, result.error().message};
         });
-    if (!already_registered) {
-      auto tool = Tool::create(
-          {.name = config.name,
-           .description = config.description,
-           .parameters = {{"query", "The durable fact or preference to look up", "string", true}},
-           .handler = [memory = memory_](const JsonObject &params) -> ToolResult {
-             if (!params.contains("query") || !params["query"].is_string())
-               return {false, "search_memory requires a string query"};
-             auto results = memory->recall(params["query"].get<std::string>());
-             if (!results)
-               return {false, results.error().message};
-             JsonObject output = JsonObject::array();
-             for (const auto &entry : results.value()) {
-               output.push_back(
-                   {{"content", entry.content}, {"metadata", entry.metadata}, {"store", "memory"}}
-               );
-             }
-             return {true, output.dump()};
-           }}
-      );
-      add_tool(std::move(tool));
-    }
-  }
-  if (memory_ && memory_->add_tool().enabled) {
-    const auto &config = memory_->add_tool();
-    const bool already_registered =
-        std::any_of(options_.tools.begin(), options_.tools.end(), [&config](const Tool &tool) {
-          return tool.definition.name == config.name;
+    register_file_tool(
+        "write_memory_file", "Create or replace a Markdown file in durable memory.",
+        {file_parameters[0], {"content", "Complete Markdown file contents", "string", true},
+         file_parameters[1]},
+        [memory = memory_](const JsonObject &params) -> ToolResult {
+          if (!params.contains("path") || !params["path"].is_string()
+              || !params.contains("content") || !params["content"].is_string())
+            return {false, "write_memory_file requires string path and content"};
+          const auto result = memory->write_file(params["path"].get<std::string>(),
+                                                 params["content"].get<std::string>(),
+                                                 params.value("store", ""));
+          return result ? ToolResult{true, "Memory file written."}
+                        : ToolResult{false, result.error().message};
         });
-    if (!already_registered) {
-      auto tool = Tool::create(
-          {.name = config.name,
-           .description = config.description,
-           .parameters =
-               {{"content", "The durable fact or preference to remember", "string", true},
-                {"store", memory_store_parameter_description(*memory_), "string", false},
-                {"metadata", "Optional structured metadata", "object", false}},
-           .handler = [memory = memory_](const JsonObject &params) -> ToolResult {
-             if (!params.contains("content") || !params["content"].is_string())
-               return {false, "add_memory requires string content"};
-
-             std::vector<std::string> stores;
-             if (params.contains("store")) {
-               if (!params["store"].is_string())
-                 return {false, "add_memory store must be a string"};
-               stores.push_back(params["store"].get<std::string>());
-             }
-
-             auto result = memory->remember(
-                 {.content = params["content"].get<std::string>(),
-                  .metadata = params.value("metadata", JsonObject::object())},
-                 stores
-             );
-             if (!result)
-               return {false, result.error().message};
-             return {true, "Memory saved."};
-           }}
-      );
-      add_tool(std::move(tool));
-    }
+    register_file_tool(
+        "rename_memory_file", "Rename a Markdown file within durable memory.",
+        {{"from", "Existing Markdown filename", "string", true},
+         {"to", "New Markdown filename", "string", true}, file_parameters[1]},
+        [memory = memory_](const JsonObject &params) -> ToolResult {
+          if (!params.contains("from") || !params["from"].is_string()
+              || !params.contains("to") || !params["to"].is_string())
+            return {false, "rename_memory_file requires string from and to"};
+          const auto result = memory->rename_file(params["from"].get<std::string>(),
+                                                  params["to"].get<std::string>(),
+                                                  params.value("store", ""));
+          return result ? ToolResult{true, "Memory file renamed."}
+                        : ToolResult{false, result.error().message};
+        });
+    register_file_tool(
+        "delete_memory_file", "Delete a Markdown file from durable memory.", file_parameters,
+        [memory = memory_](const JsonObject &params) -> ToolResult {
+          if (!params.contains("path") || !params["path"].is_string())
+            return {false, "delete_memory_file requires a string path"};
+          const auto result = memory->delete_file(params["path"].get<std::string>(),
+                                                  params.value("store", ""));
+          return result ? ToolResult{true, "Memory file deleted."}
+                        : ToolResult{false, result.error().message};
+        });
   }
 }
 
@@ -494,22 +495,6 @@ Expected<RunResult> Conversation::run(
   // Prepare the list of tool definitions for the generation request.
   const auto definitions = tool_definitions(*options_);
 
-  // Recall once for this user turn. Tool-driven inference turns should operate
-  // on the same memory snapshot instead of rereading and rescoring storage.
-  std::string memory_context;
-  if (memory_ && memory_->policy().auto_recall_enabled) {
-    auto memories = memory_->recall(user_message);
-    if (memories && !memories.value().empty()) {
-      JsonObject memory_json = JsonObject::array();
-      for (const auto &memory : memories.value())
-        memory_json.push_back({{"content", memory.content}, {"metadata", memory.metadata}});
-      memory_context =
-          "Relevant durable memory. Use it when helpful, but do not treat it as a new user "
-          "message:\n"
-          + memory_json.dump();
-    }
-  }
-
   // Run the inference loop for a maximum number of turns as specified in the
   // configuration.
   for (std::size_t turn = 1; turn <= options_->max_inference_turns; ++turn) {
@@ -520,7 +505,7 @@ Expected<RunResult> Conversation::run(
 
     // Build and measure the complete model-facing request before deciding whether to compact.
     // This includes temporary memory and tool definitions, both of which affect rendered size.
-    auto request_history = model_history(context_, memory_context);
+    auto request_history = model_history(context_);
     GenerationRequest request{
         request_history, definitions, options_->generation, options_->reasoning_effort
     };
@@ -540,7 +525,7 @@ Expected<RunResult> Conversation::run(
 
       // Compaction output is model-generated and has no guaranteed size. Rebuild and measure the
       // complete request instead of assuming the summary now fits.
-      request_history = model_history(context_, memory_context);
+      request_history = model_history(context_);
       request = GenerationRequest{
           request_history, definitions, options_->generation, options_->reasoning_effort
       };

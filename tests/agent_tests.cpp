@@ -6,6 +6,7 @@
 #include <memory>
 #include <stdexcept>
 #include <stop_token>
+#include <sstream>
 
 #include "juno_sdk/fake_model.hpp"
 #include "juno_sdk/juno_sdk.hpp"
@@ -80,6 +81,69 @@ TEST_CASE("Options factories preserve conversation snapshots") {
   auto conversation = agent.start_conversation();
   REQUIRE_THROWS_AS(agent.add_tool({}), juno::sdk::ConfigurationError);
   CHECK(conversation.history().front().content == "initial");
+}
+
+TEST_CASE("Agents expose registered tool definitions") {
+  auto model = std::make_shared<juno::sdk::FakeModel>(std::vector<juno::sdk::FakeStep>{});
+  auto agent = make_agent(
+      model,
+      {.tools = {{{"echo", "Echo input", R"({"type":"object"})"},
+                 [](std::string_view) -> juno::sdk::Expected<std::string> {
+                   return std::string{"{}"};
+                 }}}}
+  );
+
+  const auto definitions = agent.tool_definitions();
+  REQUIRE(definitions.size() == 1);
+  CHECK(definitions.front().name == "echo");
+  CHECK(definitions.front().description == "Echo input");
+  CHECK(definitions.front().parameters_json == R"({"type":"object"})");
+}
+
+TEST_CASE("Memory exposes file tools without legacy memory tools by default") {
+  auto model = std::make_shared<juno::sdk::FakeModel>(std::vector<juno::sdk::FakeStep>{});
+  auto store = juno::sdk::MemoryStore::create({
+      .name = "memory",
+      .path = (std::filesystem::temp_directory_path() / "juno-agent-memory-tools-test").string(),
+  });
+  auto agent = make_agent(model, {.memory = juno::sdk::MemoryManager::create({.stores = {store}})});
+
+  const auto definitions = agent.tool_definitions();
+  std::vector<std::string> names;
+  names.reserve(definitions.size());
+  for (const auto &definition : definitions)
+    names.push_back(definition.name);
+
+  CHECK(std::find(names.begin(), names.end(), "read_memory_file") != names.end());
+  CHECK(std::find(names.begin(), names.end(), "write_memory_file") != names.end());
+  CHECK(std::find(names.begin(), names.end(), "rename_memory_file") != names.end());
+  CHECK(std::find(names.begin(), names.end(), "delete_memory_file") != names.end());
+}
+
+TEST_CASE("Memory write tool persists a user fact") {
+  const auto directory = std::filesystem::temp_directory_path() / "juno-memory-write-tool-test";
+  std::filesystem::remove_all(directory);
+  auto store = juno::sdk::MemoryStore::create({.name = "memory", .path = directory.string()});
+  auto model = std::make_shared<juno::sdk::FakeModel>(std::vector<juno::sdk::FakeStep>{
+      juno::sdk::FakeStep::calls(
+          {{"memory-call", "write_memory_file",
+            R"({"path":"MEMORY.md","content":"# User facts\n- Prefers Fahrenheit.\n"})"}}
+      ),
+      juno::sdk::FakeStep::final("I’ll remember that.")
+  });
+  auto agent = make_agent(
+      model,
+      {.max_inference_turns = 3,
+       .memory = juno::sdk::MemoryManager::create({.stores = {store}})}
+  );
+
+  auto result = agent.start_conversation().run("I prefer Fahrenheit.");
+
+  REQUIRE(result);
+  auto content = store->read_file("MEMORY.md");
+  REQUIRE(content);
+  CHECK(content.value() == "# User facts\n- Prefers Fahrenheit.\n");
+  std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("Steering documents are composed once and shared by agents") {
@@ -158,6 +222,24 @@ TEST_CASE("Steering rejects unreadable files") {
       juno::sdk::Steering::create({.files = {"missing-steering-file.md"}}),
       juno::sdk::ConfigurationError
   );
+}
+
+TEST_CASE("Markdown memory file operations stay inside the memory directory") {
+  const auto directory = std::filesystem::temp_directory_path() / "juno-markdown-file-test";
+  std::filesystem::remove_all(directory);
+  auto store = juno::sdk::MemoryStore::create({.name = "memory", .path = directory.string()});
+
+  REQUIRE(store->write_file("project_context.md", "# Project\n"));
+  REQUIRE(store->write_file("MEMORY.md", "# Memory\n"));
+  auto content = store->read_file("project_context.md");
+  REQUIRE(content);
+  CHECK(content.value() == "# Project\n");
+  CHECK_FALSE(store->write_file("outside.txt", "nope"));
+  CHECK_FALSE(store->read_file("../outside.md"));
+  REQUIRE(store->delete_file("MEMORY.md"));
+  REQUIRE(store->rename_file("project_context.md", "context.md"));
+  REQUIRE(store->delete_file("context.md"));
+  std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("A fake model returns a final response") {
