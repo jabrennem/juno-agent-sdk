@@ -45,9 +45,10 @@ Useful CMake options:
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `JUNO_AGENT_BUILD_TESTS` | `OFF` | Build the Catch2 unit test executable and register it with CTest. |
-| `JUNO_AGENT_BUILD_EXAMPLES` | `ON` | Build the music-workflow playgrounds. |
+| `JUNO_AGENT_BUILD_EXAMPLES` | `ON` | Build the session-prep and weather playgrounds. |
 | `JUNO_AGENT_ENABLE_LLAMA_CPP` | `ON` | Fetch and compile the in-process llama.cpp model. Set to `OFF` for a model-free build. |
 | `JUNO_AGENT_FETCH_DEPS` | `ON` | Fetch pinned dependencies; set `OFF` to use installed packages. |
+| `JUNO_AGENT_BUILD_LLAMA_SERVER` | `OFF` | Build llama.cpp's local HTTP server and tools when llama.cpp is enabled. |
 
 `build.sh` defaults to an optimized Release build and accepts any additional CMake cache arguments. Set `JUNO_AGENT_BUILD_TYPE=Debug` when debugging, set `JUNO_AGENT_BUILD_DIR` to choose the build directory, and set `JUNO_AGENT_SKIP_TESTS=1` when you only want compilation. If CMake is installed outside your `PATH`, set `CMAKE_BIN=/path/to/cmake` (and `CTEST_BIN=/path/to/ctest`).
 
@@ -58,11 +59,10 @@ fixed in `examples/weather_playground.cpp`:
 
 ```sh
 ./build-llama/juno_session_prep_planning_playground /absolute/path/to/model.gguf
-./build-llama/juno_mix_playground /absolute/path/to/model.gguf
 ./build-llama/juno_weather_playground /absolute/path/to/model.gguf
 ```
 
-The weather playground preserves one recent turn so compaction can be exercised quickly. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. The planning and mix playgrounds are independent ad-hoc agent loops with tools restricted to their respective domains. Each supports `/help`, `/clear`, `/history`, `/tools`, and `/quit`. The example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
+The weather playground preserves one recent turn so compaction can be exercised quickly and supports `/compact` and `/context` in addition to the shared `/help`, `/clear`, `/history`, `/tools`, and `/quit` commands. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template, with tools restricted to that domain. Its example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
 
 ## Unit tests
 
@@ -172,7 +172,7 @@ enable thinking and pass the corresponding effort level to templates that
 support graded reasoning. Templates supporting only on/off reasoning treat all
 non-`None` levels as enabled.
 
-Tools bundle a `ToolDefinition` with a handler returning `Expected<std::string>`. Runtime tool-handler failures remain recoverable results, while invalid SDK configuration throws a typed exception:
+Tools can use either a JSON-object handler returning `ToolResult` or a string-based handler returning `Expected<std::string>`. Runtime tool-handler failures remain recoverable results, while invalid SDK configuration throws a typed exception. For example, a string-based handler can be supplied through `AgentOptions::tools`:
 
 ```cpp
 auto options = juno::sdk::AgentOptions{
@@ -263,5 +263,5 @@ Juno uses a small JSON tool protocol rather than provider-native tool calling. T
 | `test_support/fake_model.cpp` | Deterministic scripted model for build-only tests. |
 | `test_support/juno_sdk/fake_model.hpp` | Build-only fake model API for tests. |
 | `src/llama_cpp_model.cpp` | Private direct llama.cpp adapter. |
-| `examples` | Independent planning, session-prep, and mixing playground executables. |
+| `examples` | Independent session-prep planning and weather playground executables. |
 | `tests` | Fake-model unit tests. |
