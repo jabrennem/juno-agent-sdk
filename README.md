@@ -1,13 +1,47 @@
 # juno-agent-runtime
-A native modern C++ agent runtime for agents. Initially powered by llama.cpp.
 
-Juno Agent Runtime is a C++20 SDK for embedding a small, tool-using agent loop in native applications in the Juno production agents ecosystem. 
+Juno Agent Runtime is a C++20 SDK for embedding tool-using agents in native apps.
 
-It supports
-- intuitive modern API design
-- llama.cpp embedded integration for local gguf files
-- tool integration
-- Markdown-backed file memory
+## Local-first design and runtime defaults
+
+Juno runs the agent loop in your app. The bundled `LlamaCppModel` runs GGUF
+inference in the same process. Implement `Model` for another local or remote
+backend. Tools can call remote services, as the weather playground does.
+[LlamaCppModel API](include/juno_sdk/llama_cpp_model.hpp) ·
+[Model API](include/juno_sdk/model.hpp) ·
+[Weather playground](examples/weather_playground.cpp)
+
+An `Agent` defines reusable instructions and tools. Each `Conversation` takes an
+immutable configuration snapshot and owns its in-memory transcript and
+model-facing context. Conversations can also share a Markdown memory store.
+[Agent, Conversation, and Tool API](include/juno_sdk/agent.hpp) ·
+[Memory API](include/juno_sdk/memory.hpp)
+
+```text
+Agent::start_conversation() → Conversation A ─┐
+                                              ├─→ one LlamaCppModel (shared GGUF weights)
+Agent::start_conversation() → Conversation B ─┘
+```
+
+`Conversation::run()` and its callbacks are synchronous. Access each conversation
+sequentially. The shared model serializes prompt measurement and generation.
+Each generation processes the full prompt in a temporary inference context.
+Separate conversations on different threads can overlap tool work. Use a worker
+thread for a responsive UI and a host-managed queue to order pending turns or
+limit concurrent runs.
+
+Use `Agent`, `Conversation`, `Model`, and `Tool` directly for custom UI or
+scheduling. The playgrounds handle terminal input and output today. The planned
+`Harness` adds synchronous invocation and an interactive loop with shared
+commands. Output streams to stdout by default and can be redirected or disabled.
+[SDK examples](#use-from-another-cmake-application) ·
+[Terminal playgrounds](#run-the-playgrounds) ·
+[Public harness #16](https://github.com/jabrennem/juno-agent-sdk/issues/16)
+
+Also planned are reopening saved conversations and caching work for matching
+prompt tokens across generations.
+[Local session recall #15](https://github.com/jabrennem/juno-agent-sdk/issues/15) ·
+[Prompt cache retention #17](https://github.com/jabrennem/juno-agent-sdk/issues/17)
 
 ## Prerequisites
 
@@ -190,11 +224,15 @@ auto agent = juno::sdk::Agent::create({
 auto conversation = agent.start_conversation();
 ```
 
-Tool schemas, call arguments, and results use JSON strings. The same agent definition can create many independent conversations; each conversation owns its transcript and can be cleared without affecting the others.
+Tool schemas, call arguments, and results use JSON strings.
 
 ## How it works
 
-`Agent` owns a reusable model and shared behavior. Each `Conversation` owns an independent message history. A conversation sends its history to `Model::generate`, executes any returned tool calls, appends the tool results, and repeats until the model returns final text.
+A conversation sends its model-facing context to `Model::generate`, executes
+any returned tool calls, appends the tool results, and repeats until the model
+returns final text or reaches the configured inference-turn limit. Tool errors,
+including unknown tools and handler exceptions, are appended as tool results so
+the model can recover on its next turn.
 
 Long conversations can be compacted without changing the full transcript retained by the
 application. Automatic compaction is enabled by default with a conservative 75% of the model's
@@ -243,16 +281,6 @@ Set `LlamaCppOptions::prompt_log_path` to append the exact post-template prompt 
 The model also emits an `EventType::Prompt` event immediately before tokenization. Its `text` field contains that same complete rendered prompt, allowing applications to inspect or print it through the normal event callback.
 
 Juno uses a small JSON tool protocol rather than provider-native tool calling. Tool definitions are included in the prompt, and a model requests a tool by returning JSON in the `tool_calls` shape shown above. Tool results are rendered as ordinary conversation text so chat templates that do not support a native `tool` role can still render the exchange.
-
-## Runtime model and limitations
-
-- `Agent` holds a reusable model and configurable behavior; every `Conversation` receives an immutable configuration snapshot and owns an in-memory transcript.
-- Conversations are not reentrant or thread-safe. Use one conversation per concurrent chat.
-- Calls and event callbacks run synchronously, in model order.
-- Tool errors—including unknown tools and handler exceptions—are appended as tool-result messages so a model can recover on its next turn.
-- The built-in memory store exposes constrained Markdown file operations inside its configured directory. Agents are instructed to persist stable user-provided facts and preferences, while avoiding transient task data. It is not a semantic or multi-process memory system.
-- `LlamaCppModel` is in-process and uses RAII to manage the model and per-run inference contexts. Its llama.cpp dependency is isolated from the SDK’s public headers.
-- API-key/cloud models are not implemented yet; implement `Model` to add one without changing `Agent` or `Conversation`.
 
 ## Layout
 
