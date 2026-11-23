@@ -26,6 +26,7 @@ enum class ErrorCode {
   ContextLimitExceeded,
   IterationLimitExceeded,
   Cancelled,
+  SessionStorageFailed,
 };
 
 /** Represents an error in the Juno inference model. */

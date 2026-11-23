@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "juno_sdk/agent.hpp"
+#include "juno_sdk/session_store.hpp"
 
 namespace juno::sdk {
 
@@ -19,6 +20,7 @@ struct HarnessOptions {
   std::optional<CompactionOptions> compaction;
   /** Optional terminal message when the assistant returns only whitespace. */
   std::string empty_response;
+  std::optional<SessionStore> session_store;
 };
 
 /** Synchronous terminal interface to one active conversation, used from a single thread. */
@@ -33,17 +35,24 @@ public:
   [[nodiscard]] Expected<void> run_interactive(std::istream &input = std::cin);
 
   void new_session();
+  [[nodiscard]] Expected<void> resume_session(std::string_view id);
+  [[nodiscard]] const std::optional<std::string> &active_session_id() const;
 
 private:
   explicit Harness(HarnessOptions options);
+  Expected<void> checkpoint(const Conversation &conversation);
   void print_help() const;
   void print_tools() const;
   void print_context() const;
   void compact();
+  void print_sessions(std::string_view page) const;
+  void print_recent_exchanges() const;
+  void delete_session(std::string_view id);
   void report_error(std::string_view operation, const Error &error) const;
 
   HarnessOptions options_;
   Conversation conversation_;
+  std::optional<std::string> session_id_;
 };
 
 } // namespace juno::sdk

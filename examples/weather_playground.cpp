@@ -1,4 +1,7 @@
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -293,6 +296,17 @@ int main(int argc, char **argv) {
       .tools = {forecast_tool, conversion_tool},
       .memory = weather_memory,
   });
+  std::optional<juno::sdk::SessionStore> sessions;
+  if (const char *home = std::getenv("HOME"); home && *home) {
+    auto store = juno::sdk::SessionStore::create({
+        .directory = std::filesystem::path(home) / ".juno/sessions/weather",
+    });
+    if (store)
+      sessions = std::move(store.value());
+    else
+      std::cerr << "Could not enable saved weather sessions: " << store.error().message << '\n';
+  }
+
   auto harness = juno::sdk::Harness::create({
       .agent = std::move(weather_agent),
       .show_tools = true,
@@ -306,6 +320,7 @@ int main(int argc, char **argv) {
           .focus = "Preserve user preferences and recent weather context.",
       },
       .empty_response = "Please provide a city so I can check the weather.",
+      .session_store = std::move(sessions),
   });
 
   std::cout << "Weather playground (" << kContextSize << " context tokens, " << kGenerationTokens

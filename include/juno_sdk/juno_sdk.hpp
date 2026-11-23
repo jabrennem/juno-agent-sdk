@@ -10,3 +10,4 @@
 #include "juno_sdk/harness.hpp"
 #include "juno_sdk/llama_cpp_model.hpp"
 #include "juno_sdk/memory.hpp"
+#include "juno_sdk/session_store.hpp"

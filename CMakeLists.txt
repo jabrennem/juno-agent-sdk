@@ -15,6 +15,7 @@ add_library(juno_agent_runtime SHARED
     src/agent.cpp
     src/harness.cpp
     src/memory.cpp
+    src/session_store.cpp
     src/llama_cpp_model.cpp)
 add_library(Juno::Agent ALIAS juno_agent_runtime)
 set_target_properties(juno_agent_runtime PROPERTIES EXPORT_NAME Agent)
