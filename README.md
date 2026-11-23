@@ -96,7 +96,11 @@ fixed in `examples/weather_playground.cpp`:
 ./build-llama/juno_weather_playground /absolute/path/to/model.gguf
 ```
 
-The weather playground preserves one recent turn so compaction can be exercised quickly and supports `/compact` and `/context` in addition to the shared `/help`, `/clear`, `/history`, `/tools`, and `/quit` commands. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template, with tools restricted to that domain. Its example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
+Both playgrounds support `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). The weather playground keeps one recent turn when compacting and supports `/compact` and `/context`.
+
+The weather playground saves conversations in `~/.juno/sessions/weather/`. After restarting, use `/sessions` to see the 20 most recently updated conversations and `/sessions 2` to browse older ones. Use `/resume ID` to see recent exchanges and continue under the same ID. Use `/new` to start fresh or `/delete ID` to remove a saved conversation.
+
+The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. Its tools simulate DAW operations and can be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default. Set `LlamaCppOptions::chat_template_override` to supply a known compatible template name.
 
 ## Unit tests
 
@@ -133,19 +137,66 @@ FetchContent_MakeAvailable(juno_agent_runtime)
 target_link_libraries(my_app PRIVATE Juno::Agent)
 ```
 
-Minimal SDK use:
+### Terminal harness quickstart
+
+`Harness` starts a conversation from a configured `Agent`. Each call to `invoke()`
+continues that conversation, streams the assistant’s text to standard output,
+and returns an `Expected<RunResult>`.
 
 ```cpp
-#include <memory>
-#include <string_view>
-#include <utility>
+#include <iostream>
+
 #include "juno_sdk/juno_sdk.hpp"
 
-auto model = juno::sdk::LlamaCppModel::create({.model_path = "/path/to/model.gguf"});
-auto agent = juno::sdk::Agent::create({
-    .model = model,
-    .system_prompt = "Be concise.",
-});
+int main() {
+  using namespace juno::sdk;
+  auto model = LlamaCppModel::create({.model_path = "/path/to/model.gguf"});
+  auto agent = Agent::create({.model = model, .system_prompt = "Be concise."});
+  auto harness = Harness::create({.agent = agent});
+  auto result = harness.invoke("Say hello.");
+  if (!result) {
+    std::cerr << result.error().message << '\n';
+    return 1;
+  }
+  return 0;
+}
+```
+
+For a terminal loop, call `harness.run_interactive()`. Pass an input stream to read
+scripted prompts and commands. Set `HarnessOptions::output` to a stream pointer
+to redirect output or to `nullptr` for silent operation. Set `show_tools` to display
+tool calls and completions. Use `banner` for a startup title, `help` for
+application-specific instructions, and `compaction` to enable `/compact` and `/context`.
+The harness uses the Production DAW palette by default, with 24-bit ANSI
+foreground colors suited to a dark terminal. Colors also appear in redirected
+output. Set `color` to `false` for plain text.
+
+To enable session recall, create a `SessionStore` and pass it to the harness.
+
+```cpp
+auto store = SessionStore::create({.directory = "./sessions"});
+if (!store) {
+  std::cerr << store.error().message << '\n';
+  return 1;
+}
+auto harness = Harness::create({.agent = agent, .session_store = store.value()});
+auto result = harness.run_interactive();
+return result ? 0 : 1;
+```
+
+The harness saves a JSON checkpoint after each successful turn and after manual compaction
+reduces the model context.
+Failed or cancelled turns leave the previous checkpoint intact. A saved session
+retains its messages, tool calls and results, and compacted model context.
+Applications can also call `resume_session(id)` or use `SessionStore`,
+`Conversation::snapshot()`, and `Agent::restore_conversation()` directly.
+
+### Direct agent and conversation API
+
+For a custom UI or conversation lifecycle, start a `Conversation` from the
+configured `Agent` and handle the events your application needs.
+
+```cpp
 auto conversation = agent.start_conversation();
 auto result = conversation.run("Say hello.", [](const juno::sdk::AgentEvent& event) {
   // TextDelta, ToolStarted, ToolCompleted, Completed, or Error.
@@ -275,6 +326,12 @@ Conversation
 ```
 
 `LlamaCppModel` adapts the request into a llama.cpp chat prompt, tokenizes it, generates tokens, streams text events, and parses the completed output.
+
+The SDK writes llama.cpp warnings and errors to standard error by default.
+To capture verbose backend diagnostics in a separate file, set
+`JUNO_LLAMA_LOG_PATH=/path/to/llama.log` before starting the application. The SDK
+reads this setting when it first initializes llama.cpp and appends backend
+messages to that file. Chat template warnings and errors still go to standard error.
 
 Set `LlamaCppOptions::prompt_log_path` to append the exact post-template prompt sent to llama.cpp to a local diagnostic file. `LlamaCppOptions::batch_size` controls prompt decoding batch size; prompts larger than one batch are decoded in multiple chunks while remaining within `context_size`.
 

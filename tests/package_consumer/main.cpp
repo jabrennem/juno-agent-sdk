@@ -7,11 +7,10 @@ namespace {
 
 class PackageConsumerModel final : public juno::sdk::Model {
 public:
-  juno::sdk::Expected<juno::sdk::GenerationResponse>
-  generate(const juno::sdk::GenerationRequest &,
-           const juno::sdk::EventCallback &, std::stop_token) override {
-    return juno::sdk::make_unexpected(juno::sdk::Error{
-        juno::sdk::ErrorCode::GenerationFailed, "package consumer smoke test"});
+  juno::sdk::Expected<juno::sdk::GenerationResponse> generate(const juno::sdk::GenerationRequest &,
+                                                              const juno::sdk::EventCallback &,
+                                                              std::stop_token) override {
+    return juno::sdk::GenerationResponse{"Hello from the installed SDK."};
   }
 };
 
@@ -20,6 +19,7 @@ public:
 int main() {
   auto model = std::make_shared<PackageConsumerModel>();
   auto agent = juno::sdk::Agent::create({.model = model});
-  auto conversation = agent.start_conversation();
-  return conversation.history().empty() ? 0 : 1;
+  auto harness = juno::sdk::Harness::create({.agent = agent});
+  const auto result = harness.invoke("Say hello.");
+  return result && result.value().final_text == "Hello from the installed SDK." ? 0 : 1;
 }

@@ -34,6 +34,14 @@ struct Message {
   std::string tool_name;
 };
 
+/** Conversation state without the agent's initial system prompt or steering.
+ * The context may start with a system message containing a compaction summary.
+ */
+struct ConversationSnapshot {
+  std::vector<Message> history;
+  std::vector<Message> context;
+};
+
 /** Options controlling model-facing conversation compaction. */
 struct CompactionOptions {
   /** Absolute rendered-input threshold; takes precedence when nonzero. */
