@@ -37,28 +37,6 @@ namespace
     return spec;
   }
 
-  void print_help()
-  {
-    std::cout
-        << "Describe the raw-files folder and mix template you want to plan "
-           "from.\n"
-        << "Example: Plan session prep for ./stems using ./templates/rock-mix.\n"
-        << "Commands: /clear, /history, /tools, /help, /quit\n";
-  }
-
-  void print_tools(const Agent &agent)
-  {
-    const auto tools = agent.tool_definitions();
-    if (tools.empty())
-    {
-      std::cout << "No tools configured.\n";
-      return;
-    }
-    std::cout << "Available tools:\n";
-    for (const auto &tool : tools)
-      std::cout << "- " << tool.name << ": " << tool.description << '\n';
-  }
-
 } // namespace
 
 int main(int argc, char **argv)
@@ -71,53 +49,19 @@ int main(int argc, char **argv)
 
   auto model = LlamaCppModel::create({.model_path = argv[1], .context_size = 4096});
 
-  // Create an agent with the planning spec and start a conversation.
   auto options = planning_options();
   options.model = model;
-  auto agent = Agent::create(std::move(options));
-  auto conversation = agent.start_conversation();
-  
+  auto harness = Harness::create({
+      .agent = Agent::create(std::move(options)),
+      .prompt = "[plan] > ",
+      .help = "Describe the raw-files folder and mix template you want to plan from.\n"
+              "Example: Plan session prep for ./stems using ./templates/rock-mix.",
+  });
+
   std::cout << "Session prep planning playground\n";
-  print_help();
-
-  // Main input loop for the planning agent.
-  for (std::string input;
-       std::cout << "[plan] > " && std::getline(std::cin, input);)
-  {
-    if (input == "/quit" || input == "/exit")
-      break;
-    if (input == "/help")
-    {
-      print_help();
-      continue;
-    }
-    if (input == "/clear")
-    {
-      conversation.clear();
-      std::cout << "Planning conversation cleared.\n";
-      continue;
-    }
-    if (input == "/history")
-    {
-      std::cout << conversation.history().size() << " messages\n";
-      continue;
-    }
-    if (input == "/tools")
-    {
-      print_tools(agent);
-      continue;
-    }
-    if (input.empty())
-      continue;
-
-    std::cout << "assistant: ";
-    auto result = conversation.run(input, [](const AgentEvent &event)
-                                   {
-      if (event.type == EventType::TextDelta)
-        std::cout << event.text << std::flush; });
-    if (!result)
-      std::cerr << "\nRun failed: " << result.error().message << '\n';
-    else
-      std::cout << '\n';
+  auto result = harness.run_interactive();
+  if (!result) {
+    std::cerr << result.error().message << '\n';
+    return 1;
   }
 }

@@ -96,7 +96,9 @@ fixed in `examples/weather_playground.cpp`:
 ./build-llama/juno_weather_playground /absolute/path/to/model.gguf
 ```
 
-The weather playground preserves one recent turn so compaction can be exercised quickly and supports `/compact` and `/context` in addition to the shared `/help`, `/clear`, `/history`, `/tools`, and `/quit` commands. The planning playground creates a session-preparation plan from raw WAV metadata and a mix template, with tools restricted to that domain. Its example tools simulate DAW operations and are intended to be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default; `LlamaCppOptions::chat_template_override` can supply a known compatible template name.
+Both playgrounds support `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). The weather playground keeps one recent turn when compacting and supports `/compact` and `/context`.
+
+The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. Its tools simulate DAW operations and can be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default. Set `LlamaCppOptions::chat_template_override` to supply a known compatible template name.
 
 ## Unit tests
 
@@ -133,19 +135,43 @@ FetchContent_MakeAvailable(juno_agent_runtime)
 target_link_libraries(my_app PRIVATE Juno::Agent)
 ```
 
-Minimal SDK use:
+### Terminal harness quickstart
+
+`Harness` starts a conversation from a configured `Agent`. Each call to `invoke()`
+continues that conversation, streams the assistant’s text to standard output,
+and returns an `Expected<RunResult>`.
 
 ```cpp
-#include <memory>
-#include <string_view>
-#include <utility>
+#include <iostream>
+
 #include "juno_sdk/juno_sdk.hpp"
 
-auto model = juno::sdk::LlamaCppModel::create({.model_path = "/path/to/model.gguf"});
-auto agent = juno::sdk::Agent::create({
-    .model = model,
-    .system_prompt = "Be concise.",
-});
+int main() {
+  using namespace juno::sdk;
+  auto model = LlamaCppModel::create({.model_path = "/path/to/model.gguf"});
+  auto agent = Agent::create({.model = model, .system_prompt = "Be concise."});
+  auto harness = Harness::create({.agent = agent});
+  auto result = harness.invoke("Say hello.");
+  if (!result) {
+    std::cerr << result.error().message << '\n';
+    return 1;
+  }
+  return 0;
+}
+```
+
+For a terminal loop, call `harness.run_interactive()`. Pass an input stream to read
+scripted prompts and commands. Set `HarnessOptions::output` to a stream pointer
+to redirect output or to `nullptr` for silent operation. Set `show_tools` to display
+tool calls and completions. Use `help` for application-specific instructions and
+`compaction` to enable `/compact` and `/context`.
+
+### Direct agent and conversation API
+
+For a custom UI or conversation lifecycle, start a `Conversation` from the
+configured `Agent` and handle the events your application needs.
+
+```cpp
 auto conversation = agent.start_conversation();
 auto result = conversation.run("Say hello.", [](const juno::sdk::AgentEvent& event) {
   // TextDelta, ToolStarted, ToolCompleted, Completed, or Error.

@@ -13,6 +13,7 @@ option(JUNO_AGENT_BUILD_LLAMA_SERVER "Build llama.cpp's local HTTP server" OFF)
 
 add_library(juno_agent_runtime SHARED
     src/agent.cpp
+    src/harness.cpp
     src/memory.cpp
     src/llama_cpp_model.cpp)
 add_library(Juno::Agent ALIAS juno_agent_runtime)
@@ -130,7 +131,7 @@ if(JUNO_AGENT_BUILD_TESTS)
             FetchContent_MakeAvailable(catch2)
         endif()
     endif()
-    add_executable(juno_sdk_tests tests/agent_tests.cpp)
+    add_executable(juno_sdk_tests tests/agent_tests.cpp tests/harness_tests.cpp)
     target_link_libraries(juno_sdk_tests PRIVATE
         Juno::Agent
         juno_sdk_test_support
