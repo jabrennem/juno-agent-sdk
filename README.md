@@ -1,23 +1,19 @@
 # juno-agent-runtime
 
-Juno Agent Runtime is a C++20 SDK for embedding a small, tool-using agent loop in native applications in the Juno production agents ecosystem.
+Juno Agent Runtime is a C++20 SDK for embedding tool-using agents in native apps.
 
 ## Local-first design and runtime defaults
 
-Juno runs the agent loop in your application process. The bundled
-[`LlamaCppModel`](include/juno_sdk/llama_cpp_model.hpp) adapter loads a GGUF model
-and runs inference locally in that same process. Applications can implement the
-[`Model`](include/juno_sdk/model.hpp) interface for another local or remote backend.
-Tool handlers can also call remote services, as the weather playground does to
-fetch forecasts from Open-Meteo. [Weather playground](examples/weather_playground.cpp)
+Juno runs the agent loop in your app. The bundled `LlamaCppModel` runs GGUF
+inference in the same process. Implement `Model` for another local or remote
+backend. Tools can call remote services, as the weather playground does.
+[LlamaCppModel API](include/juno_sdk/llama_cpp_model.hpp) ·
+[Model API](include/juno_sdk/model.hpp) ·
+[Weather playground](examples/weather_playground.cpp)
 
-An `Agent` defines reusable behavior, including the system prompt, steering,
-and tools. Each call to `Agent::start_conversation()` takes an immutable
-configuration snapshot and creates a `Conversation` with its own in-memory
-transcript and model-facing context. Compaction updates that context while
-preserving the full transcript. Conversations can also share a Markdown memory
-store for durable facts and preferences. The built-in store confines file
-operations to its configured directory.
+An `Agent` defines reusable instructions and tools. Each `Conversation` takes an
+immutable configuration snapshot and owns its in-memory transcript and
+model-facing context. Conversations can also share a Markdown memory store.
 [Agent, Conversation, and Tool API](include/juno_sdk/agent.hpp) ·
 [Memory API](include/juno_sdk/memory.hpp)
 
@@ -27,30 +23,23 @@ Agent::start_conversation() → Conversation A ─┐
 Agent::start_conversation() → Conversation B ─┘
 ```
 
-`Conversation::run()` blocks the calling thread and delivers events
-synchronously. Use each conversation sequentially, including access to its
-state. A shared `LlamaCppModel` instance serializes individual prompt measurement
-and generation calls. Each generation creates a temporary inference context,
-processes the full prompt, and releases the context when it finishes. Separate
-conversations on host-managed threads can overlap tool work between model calls.
-To keep a UI responsive, run turns on a worker thread. Add a host-managed job
-queue if you need to order pending turns or limit how many runs are active.
+`Conversation::run()` and its callbacks are synchronous. Access each conversation
+sequentially. The shared model serializes prompt measurement and generation.
+Each generation processes the full prompt in a temporary inference context.
+Separate conversations on different threads can overlap tool work. Use a worker
+thread for a responsive UI and a host-managed queue to order pending turns or
+limit concurrent runs.
 
-For direct embedding, supply a `Model` when creating an `Agent`, register
-`Tool` handlers, and use `Conversation::run()` with an optional event callback
-to render output in your own UI. The terminal playgrounds implement their own
-input loops, slash commands, and streaming output. The planned public `Harness`
-will provide synchronous invocation and an interactive terminal loop with shared
-commands. It will stream assistant text to stdout by default and let callers
-redirect or disable output.
+Use `Agent`, `Conversation`, `Model`, and `Tool` directly for custom UI or
+scheduling. The playgrounds handle terminal input and output today. The planned
+`Harness` adds synchronous invocation and an interactive loop with shared
+commands. Output streams to stdout by default and can be redirected or disabled.
 [SDK examples](#use-from-another-cmake-application) ·
 [Terminal playgrounds](#run-the-playgrounds) ·
 [Public harness #16](https://github.com/jabrennem/juno-agent-sdk/issues/16)
 
-Local session recall and configurable prompt cache retention are planned.
-Session recall would let an application reopen a saved conversation. Prompt
-cache retention would let the llama.cpp adapter reuse work for matching prompt
-tokens across generations.
+Also planned are reopening saved conversations and caching work for matching
+prompt tokens across generations.
 [Local session recall #15](https://github.com/jabrennem/juno-agent-sdk/issues/15) ·
 [Prompt cache retention #17](https://github.com/jabrennem/juno-agent-sdk/issues/17)
 
