@@ -12,9 +12,11 @@ struct TerminalHarnessOptions {
   Agent agent;
   /** Borrowed terminal output stream. Set to nullptr to silence output. */
   std::ostream *output{&std::cout};
+  /** Show a compact summary of successful tool calls. Failures are always visible. */
   bool show_tools{false};
+  /** Initially display model reasoning deltas. Toggle during a session with /reasoning. */
   bool show_reasoning{false};
-  /** Set to false to disable ANSI colors. */
+  /** Enable ANSI styling on supported terminals, subject to NO_COLOR. */
   bool color{true};
   std::string prompt{"You> "};
   /** Optional title printed once at the start of the interactive loop. */
@@ -43,10 +45,18 @@ public:
   [[nodiscard]] const std::optional<std::string> &active_session_id() const;
 
 private:
+  struct ToolActivity {
+    ToolCall call;
+    std::optional<std::string> error;
+    std::chrono::milliseconds elapsed;
+  };
+
   explicit TerminalHarness(TerminalHarnessOptions options);
+  Expected<RunResult> invoke(std::string_view prompt, std::stop_token stop_token, bool terminal);
   Expected<void> checkpoint(const Conversation &conversation);
   void print_help() const;
   void print_tools() const;
+  void print_activity() const;
   void print_context() const;
   void compact();
   void print_sessions(std::string_view page) const;
@@ -57,6 +67,9 @@ private:
   TerminalHarnessOptions options_;
   Conversation conversation_;
   std::optional<std::string> session_id_;
+  std::vector<ToolActivity> last_activity_;
+  std::vector<std::chrono::milliseconds> last_model_times_;
+  std::size_t next_thinking_frame_{};
 };
 
 } // namespace juno::sdk

@@ -315,13 +315,10 @@ int main(int argc, char **argv) {
   auto harness = juno::sdk::TerminalHarness::create({
       .agent = std::move(weather_agent),
       .show_tools = true,
-      .show_reasoning = true,
-      .prompt = "[weather] > ",
-      .banner = "Weather Agent (" + std::to_string(kContextSize) + " context tokens, " +
-                std::to_string(kGenerationTokens) + " generation tokens)",
+      .prompt = "> ",
+      .banner = "Weather Agent",
       .help = "Ask for a weather forecast for any city.\n"
-              "Example: What's the weather in Seattle for five days?\n"
-              "Automatic compaction: enabled at 75% of the model context budget.",
+              "Example: What's the weather in Seattle for five days?",
       .compaction = juno::sdk::CompactionOptions{
           .preserve_recent_turns = 1,
           .focus = "Preserve user preferences and recent weather context.",

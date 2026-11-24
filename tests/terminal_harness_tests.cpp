@@ -8,6 +8,7 @@
 
 #include "juno_sdk/fake_model.hpp"
 #include "juno_sdk/juno_sdk.hpp"
+#include "../src/terminal_markdown.hpp"
 
 namespace {
 using namespace juno::sdk;
@@ -55,7 +56,8 @@ TEST_CASE("TerminalHarness invoke streams text and returns the turn result") {
   REQUIRE(first);
   CHECK(first.value().final_text == "Default");
   CHECK(first.value().messages.size() == 2);
-  CHECK(console.output.str() == "\033[38;2;229;233;239mDefault\033[0m\n");
+  const auto console_text = console.output.str();
+  CHECK(console_text.find("Default") != std::string::npos);
 
   std::ostringstream redirected;
   auto custom = TerminalHarness::create({.agent = agent, .output = &redirected, .color = false});
@@ -66,7 +68,7 @@ TEST_CASE("TerminalHarness invoke streams text and returns the turn result") {
   const auto last = silent.invoke("Hello");
   REQUIRE(last);
   CHECK(last.value().final_text == "Silent");
-  CHECK(console.output.str() == "\033[38;2;229;233;239mDefault\033[0m\n");
+  CHECK(console.output.str() == console_text);
 }
 
 TEST_CASE("TerminalHarness interactive commands share the invocation path") {
@@ -96,8 +98,7 @@ TEST_CASE("TerminalHarness interactive commands share the invocation path") {
   CHECK(output.str().find('\033') == std::string::npos);
   CHECK(output.str().find("Example-specific help.") != std::string::npos);
   CHECK(output.str().find("lookup: Look something up.") != std::string::npos);
-  CHECK(output.str().find("tool: lookup({})\ntool completed: lookup\nFound it") !=
-        std::string::npos);
+  CHECK(output.str().find("Tools | lookup\nFound it") != std::string::npos);
   CHECK(output.str().find("4 messages") != std::string::npos);
   CHECK(output.str().find("0 messages") != std::string::npos);
   REQUIRE(model->requests().size() == 3);
@@ -105,7 +106,32 @@ TEST_CASE("TerminalHarness interactive commands share the invocation path") {
   CHECK(model->requests().back().front().content == "Next prompt");
 }
 
-TEST_CASE("TerminalHarness starts the interactive terminal in color") {
+TEST_CASE("TerminalHarness can toggle reasoning without submitting a model prompt") {
+  auto model = std::make_shared<FakeModel>(std::vector{
+      FakeStep::final("First answer", "Hidden by default"),
+      FakeStep::final("Second answer", "Visible reasoning"),
+      FakeStep::final("Third answer", "Hidden again"),
+  });
+  std::ostringstream output;
+  auto harness = TerminalHarness::create({
+      .agent = Agent::create({.model = model}),
+      .output = &output,
+  });
+  std::istringstream input("First prompt\n/reasoning\n/reasoning invalid\n"
+                           "Second prompt\n/reasoning off\nThird prompt\n/exit\n");
+  REQUIRE(harness.run_interactive(input));
+  const auto text = output.str();
+  CHECK(text.find("Reasoning on.\n") != std::string::npos);
+  CHECK(text.find("Usage: /reasoning [on|off]\n") != std::string::npos);
+  CHECK(text.find("Reasoning off.\n") != std::string::npos);
+  CHECK(text.find("Visible reasoning\nSecond answer") != std::string::npos);
+  CHECK(text.find("Hidden by default") == std::string::npos);
+  CHECK(text.find("Hidden again") == std::string::npos);
+  REQUIRE(model->requests().size() == 3);
+  CHECK(model->requests()[1].back().content == "Second prompt");
+}
+
+TEST_CASE("TerminalHarness keeps scripted output plain") {
   auto model = std::make_shared<FakeModel>(std::vector{
       FakeStep::final("Hello"),
       FakeStep::failure({ErrorCode::GenerationFailed, "generation failed"}),
@@ -122,25 +148,25 @@ TEST_CASE("TerminalHarness starts the interactive terminal in color") {
 
   REQUIRE(harness.run_interactive(input));
   const auto text = output.str();
-  CHECK(text.starts_with("\033[38;2;90;167;255mPlayground\033[0m\n"
-                         "\033[38;2;154;164;175mTry a prompt.\033[0m\n"
-                         "\033[38;2;90;167;255mCommands:\033[0m "));
-  CHECK(text.find("\033[38;2;90;167;255m[test] > \033[0m") != std::string::npos);
-  CHECK(text.find("\033[38;2;90;167;255massistant:\033[0m\n") != std::string::npos);
-  CHECK(text.find("\033[38;2;255;107;107mRun failed: generation failed\033[0m\n") !=
-        std::string::npos);
+  CHECK(text.starts_with("Playground\nTry a prompt.\nCommands: "));
+  CHECK(text.find("[test] > assistant:\nHello\n") != std::string::npos);
+  CHECK(text.find("Run failed: generation failed\n") != std::string::npos);
+  CHECK(text.find('\033') == std::string::npos);
   CHECK(text.find("Playground", text.find("Playground") + 1) == std::string::npos);
 }
 
-TEST_CASE("TerminalHarness colors tool activity and replies by default") {
+TEST_CASE("TerminalHarness groups successful tool calls and exposes last-turn details") {
   auto model = std::make_shared<FakeModel>(std::vector{
-      FakeStep::calls({{"call-1", "lookup", "{}"}}),
-      FakeStep::final("Found it"),
+      FakeStep::calls({{"call-1", "look_up", R"({"id":1})"}, {"call-2", "look_up", R"({"id":2})"},
+                       {"call-3", "missing", "{}"}}),
+      FakeStep::final("**Found it**"),
   });
   auto agent = Agent::create({
       .model = model,
-      .tools = {{{"lookup", "Look something up."},
-                 [](std::string_view) -> Expected<std::string> { return "a result"; }}},
+      .tools = {{{"look_up", "Look something up."},
+                 [](std::string_view) -> Expected<std::string> {
+                   return R"({"error":"a valid field in the returned data"})";
+                 }}},
   });
   std::ostringstream output;
   auto harness = TerminalHarness::create({
@@ -151,10 +177,40 @@ TEST_CASE("TerminalHarness colors tool activity and replies by default") {
 
   const auto result = harness.invoke("Look it up");
   REQUIRE(result);
-  CHECK(result.value().final_text == "Found it");
-  CHECK(output.str() == "\033[38;2;90;167;255mtool: lookup({})\033[0m\n"
-                        "\033[38;2;95;210;143mtool completed: lookup\033[0m\n"
-                        "\033[38;2;229;233;239mFound it\033[0m\n");
+  CHECK(result.value().final_text == "**Found it**");
+  CHECK(result.value().model_generation_times.size() == 2);
+  const auto turn = output.str();
+  CHECK(turn.find("Tool failed: missing") != std::string::npos);
+  CHECK(turn.find("Tools | look up x2\n**Found it**\n") != std::string::npos);
+  CHECK(turn.find("look_up(") == std::string::npos);
+  CHECK(turn.find('\033') == std::string::npos);
+
+  std::istringstream commands("/activity\n/new\n/activity\n/quit\n");
+  REQUIRE(harness.run_interactive(commands));
+  const auto transcript = output.str();
+  CHECK(transcript.find("Model pass 1  ") != std::string::npos);
+  CHECK(transcript.find("Model pass 2  ") != std::string::npos);
+  CHECK(transcript.find(R"(Completed  look_up({"id":1}))") != std::string::npos);
+  CHECK(transcript.find(R"(Completed  look_up({"id":2}))") != std::string::npos);
+  CHECK(transcript.find("Failed  missing({})  unknown tool: missing  (") != std::string::npos);
+  CHECK(transcript.find("No tool calls in the last turn.") != std::string::npos);
+}
+
+TEST_CASE("Terminal Markdown formats split deltas and wraps lists while preserving code") {
+  std::ostringstream output;
+  detail::TerminalMarkdown markdown(output, true, 24);
+  markdown.append("**Colum");
+  CHECK(output.str().empty());
+  markdown.append("bus, Ohio**\n- Bring a warm coat if you're going outside.\n");
+  CHECK(output.str() == "\033[1mColumbus, Ohio\033[0m\n"
+                        "• Bring a warm coat if\n"
+                        "  you're going outside.\n");
+
+  markdown.append("```text\n  **literal** text that should stay on one line\n");
+  markdown.append("```\nRun `/activity`.");
+  markdown.finish();
+  CHECK(output.str().ends_with("  **literal** text that should stay on one line\n"
+                               "Run \033[36m/activity\033[0m.\n"));
 }
 
 TEST_CASE("TerminalHarness keeps a checkpoint across compaction, failure, and restart") {
@@ -184,7 +240,7 @@ TEST_CASE("TerminalHarness keeps a checkpoint across compaction, failure, and re
   REQUIRE(harness.invoke("Weather in Seattle?"));
   REQUIRE(harness.active_session_id());
   const auto id = *harness.active_session_id();
-  CHECK(output.str().find("tool:") == std::string::npos);
+  CHECK(output.str().find("Tools |") == std::string::npos);
   REQUIRE(harness.invoke("What about today?"));
   std::istringstream commands("/context\n/compact\n/new\n/quit\n");
   REQUIRE(harness.run_interactive(commands));

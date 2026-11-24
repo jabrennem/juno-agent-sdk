@@ -17,8 +17,9 @@ struct FakeStep {
   std::string content;
   std::vector<ToolCall> tool_calls;
   Error error{ErrorCode::GenerationFailed, "scripted model failure"};
+  std::string reasoning;
 
-  static FakeStep final(std::string text);
+  static FakeStep final(std::string text, std::string reasoning = {});
   static FakeStep calls(std::vector<ToolCall> calls, std::string text = {});
   static FakeStep failure(Error error);
 };

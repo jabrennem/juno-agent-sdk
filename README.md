@@ -91,7 +91,14 @@ set in `examples/weather_agent.cpp`:
 ./build/juno_weather_agent /absolute/path/to/model.gguf
 ```
 
-Weather Agent supports `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). It keeps one recent turn when compacting and supports `/compact` and `/context`.
+Weather Agent streams formatted answers and groups repeated tool calls in a compact summary.
+Each reply ends with a local timestamp and the total, model, and tool durations.
+Use `/activity` to inspect individual model pass times and tool arguments, outcomes, and durations.
+Use `/reasoning` to toggle the display of reasoning emitted by the model during future turns.
+Use `/reasoning on` or `/reasoning off` to set it explicitly.
+Use `/help` to list commands. The agent keeps one recent turn when compacting.
+Use `/compact` to compact on demand or `/context` to see token usage, model limits, and
+the compaction threshold.
 
 In a terminal, type `/` and press Tab to list commands, or type a prefix such as
 `/hist` and press Tab to complete it. This uses the system libedit when available
@@ -168,12 +175,21 @@ int main() {
 
 For a terminal loop, call `harness.run_interactive()`. Pass an input stream to read
 scripted prompts and commands. Set `TerminalHarnessOptions::output` to a stream pointer
-to redirect output or to `nullptr` for silent operation. Set `show_tools` to display
-tool calls and completions. Use `banner` for a startup title, `help` for
+to redirect output or to `nullptr` for silent operation. Set `show_tools` to summarize
+completed tool calls, or `show_reasoning` to also print reasoning. Tool failures appear
+as they happen. The `/activity` command lists model generation times and individual tool calls
+from the last turn.
+Use `banner` for a startup title, `help` for
 application-specific instructions, and `compaction` to enable `/compact` and `/context`.
-The harness uses the Production DAW palette by default, with 24-bit ANSI
-foreground colors suited to a dark terminal. Colors also appear in redirected
-output. Set `color` to `false` for plain text.
+On supported terminals, the thinking line animates its dots once per second. Each phrase
+starts with three dots, then shows one, two, and three before the next phrase.
+It rotates through English phrases and translations covering languages and varieties
+with at least 50 million total speakers in the
+[2026 Ethnologue ranking](https://www.ethnologue.com/insights/ethnologue200). Each new turn
+continues the rotation. The harness formats
+Markdown headings, bold text, lists, and code as lines arrive. Piped and redirected
+output uses plain text and preserves the answer's Markdown source. Set `color` to
+`false` or set the `NO_COLOR` environment variable to disable styling and progress redraws.
 
 To enable session recall, create a `SessionStore` and pass it to the harness.
 

@@ -518,6 +518,7 @@ Expected<RunResult> Conversation::run(
 
   // Prepare the list of tool definitions for the generation request.
   const auto definitions = tool_definitions(*options_);
+  std::vector<std::chrono::milliseconds> model_generation_times;
 
   // Run the inference loop for a maximum number of turns as specified in the
   // configuration.
@@ -571,7 +572,10 @@ Expected<RunResult> Conversation::run(
       return make_unexpected(error);
     }
 
+    const auto generation_started_at = std::chrono::steady_clock::now();
     auto response = model_->generate(request, callback, stop_token);
+    model_generation_times.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - generation_started_at));
     if (!response) {
       emit(callback, AgentEvent{EventType::Error, response.error().message, {}});
       return make_unexpected(response.error());
@@ -583,7 +587,7 @@ Expected<RunResult> Conversation::run(
     );
     context_.push_back(history_.back());
     if (response.value().tool_calls.empty()) {
-      RunResult result{response.value().content, history_, turn};
+      RunResult result{response.value().content, history_, turn, std::move(model_generation_times)};
       emit(callback, AgentEvent{EventType::Completed, result.final_text, {}});
       return result;
     }
@@ -596,38 +600,49 @@ Expected<RunResult> Conversation::run(
       }
       emit(callback, AgentEvent{EventType::ToolStarted, {}, call});
       std::string output;
+      std::optional<std::string> tool_error;
+      const auto fail_tool = [&](std::string message) {
+        output = tool_error_json(message);
+        tool_error = std::move(message);
+      };
       const auto registered =
           std::find_if(options_->tools.begin(), options_->tools.end(), [&call](const Tool &tool) {
             return tool.definition.name == call.name;
           });
       if (registered == options_->tools.end()) {
-        output = tool_error_json("unknown tool: " + call.name);
+        fail_tool("unknown tool: " + call.name);
       } else if (!registered->handler && !registered->json_handler) {
-        output = tool_error_json("tool has no handler: " + call.name);
+        fail_tool("tool has no handler: " + call.name);
       } else {
         try {
           if (registered->json_handler) {
             const auto params = JsonObject::parse(call.arguments_json);
             const auto result = registered->json_handler(params);
-            output = result.success ? result.content : tool_error_json(result.content);
+            if (result.success)
+              output = result.content;
+            else
+              fail_tool(result.content);
             if (output.empty() && !result.data.is_null())
               output = result.data.dump();
           } else {
             auto tool_result = registered->handler(call.arguments_json);
-            output =
-                tool_result ? tool_result.value() : tool_error_json(tool_result.error().message);
+            if (tool_result)
+              output = std::move(tool_result.value());
+            else
+              fail_tool(tool_result.error().message);
           }
         } catch (const std::exception &exception) {
-          output = tool_error_json(std::string("tool threw: ") + exception.what());
+          fail_tool(std::string("tool threw: ") + exception.what());
         } catch (...) {
-          output = tool_error_json("tool threw an unknown exception");
+          fail_tool("tool threw an unknown exception");
         }
       }
       // Add the tool's output to the conversation history and emit a
       // ToolCompleted event.
       history_.push_back(Message{Role::Tool, std::move(output), {}, call.id, call.name});
       context_.push_back(history_.back());
-      emit(callback, AgentEvent{EventType::ToolCompleted, history_.back().content, call});
+      emit(callback, AgentEvent{EventType::ToolCompleted, history_.back().content, call,
+                                std::move(tool_error)});
     }
   }
 

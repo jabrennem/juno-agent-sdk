@@ -4,10 +4,11 @@
 
 namespace juno::sdk {
 
-FakeStep FakeStep::final(std::string text) {
+FakeStep FakeStep::final(std::string text, std::string reasoning) {
   FakeStep step;
   step.kind = Kind::Final;
   step.content = std::move(text);
+  step.reasoning = std::move(reasoning);
   return step;
 }
 
@@ -54,6 +55,9 @@ Expected<GenerationResponse> FakeModel::generate(
   const FakeStep &step = script_[next_step_++];
   if (step.kind == FakeStep::Kind::Failure) {
     return make_unexpected(step.error);
+  }
+  if (!step.reasoning.empty() && callback) {
+    callback(AgentEvent{EventType::ReasoningDelta, step.reasoning, {}});
   }
   if (!step.content.empty() && callback) {
     callback(AgentEvent{EventType::TextDelta, step.content, {}});

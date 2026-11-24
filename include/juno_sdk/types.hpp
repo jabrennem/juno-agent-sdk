@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -111,6 +112,8 @@ struct AgentEvent {
   EventType type;
   std::string text;
   ToolCall tool_call;
+  /** Error message when a ToolCompleted event represents a failed call. */
+  std::optional<std::string> tool_error{};
 };
 
 /** Callback type for handling events during inference. */
@@ -121,6 +124,8 @@ struct RunResult {
   std::string final_text;
   std::vector<Message> messages;
   std::size_t inference_turns{0};
+  /** Time spent in each model generation pass, in execution order. */
+  std::vector<std::chrono::milliseconds> model_generation_times{};
 };
 
 } // namespace juno::sdk

@@ -14,12 +14,15 @@ option(JUNO_AGENT_BUILD_LLAMA_SERVER "Build llama.cpp's local HTTP server" OFF)
 add_library(juno_agent_runtime SHARED
     src/agent.cpp
     src/terminal_harness.cpp
+    src/terminal_markdown.cpp
     src/memory.cpp
     src/session_store.cpp
     src/llama_cpp_model.cpp)
 add_library(Juno::Agent ALIAS juno_agent_runtime)
 set_target_properties(juno_agent_runtime PROPERTIES EXPORT_NAME Agent)
 
+find_package(Threads REQUIRED)
+target_link_libraries(juno_agent_runtime PRIVATE Threads::Threads)
 target_compile_features(juno_agent_runtime PUBLIC cxx_std_20)
 target_include_directories(juno_agent_runtime
     PUBLIC
@@ -38,7 +41,7 @@ if(UNIX)
         int main() {
             EditLine *editor = el_init("juno", stdin, stdout, stderr);
             el_end(editor);
-            return EL_PROMPT_ESC;
+            return EL_PROMPT;
         }
     ]=] JUNO_AGENT_HAS_EDITLINE)
     cmake_pop_check_state()
