@@ -119,6 +119,7 @@ public:
 
   // Returns the history of messages in this conversation.
   [[nodiscard]] const std::vector<Message> &history() const;
+  [[nodiscard]] ConversationSnapshot snapshot() const;
   /** Returns rendered model-facing context usage before temporary memory injection. */
   [[nodiscard]] Expected<ContextUsage> context_usage() const;
   void clear();
@@ -150,6 +151,8 @@ public:
   Agent &operator=(const Agent &) = default;
 
   [[nodiscard]] Conversation start_conversation() const;
+  /** Restores a transcript and compacted context using this agent's current configuration. */
+  [[nodiscard]] Expected<Conversation> restore_conversation(ConversationSnapshot snapshot) const;
   /** Returns the definitions of tools available to new conversations. */
   [[nodiscard]] std::vector<ToolDefinition> tool_definitions() const;
   /** Adds a tool for conversations created after this call. */

@@ -6,14 +6,16 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(JUNO_AGENT_BUILD_TESTS "Build Juno Agent Runtime SDK unit tests" OFF)
-option(JUNO_AGENT_BUILD_EXAMPLES "Build Juno Agent Runtime SDK playground executables" ON)
+option(JUNO_AGENT_BUILD_EXAMPLES "Build the Weather Agent example" OFF)
 option(JUNO_AGENT_ENABLE_LLAMA_CPP "Build the in-process llama.cpp model" ON)
 option(JUNO_AGENT_FETCH_DEPS "Fetch third-party dependencies when needed" ON)
 option(JUNO_AGENT_BUILD_LLAMA_SERVER "Build llama.cpp's local HTTP server" OFF)
 
 add_library(juno_agent_runtime SHARED
     src/agent.cpp
+    src/terminal_harness.cpp
     src/memory.cpp
+    src/session_store.cpp
     src/llama_cpp_model.cpp)
 add_library(Juno::Agent ALIAS juno_agent_runtime)
 set_target_properties(juno_agent_runtime PROPERTIES EXPORT_NAME Agent)
@@ -24,6 +26,27 @@ target_include_directories(juno_agent_runtime
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(juno_agent_runtime PRIVATE JUNO_AGENT_HAS_LLAMA_CPP=$<BOOL:${JUNO_AGENT_ENABLE_LLAMA_CPP}>)
+
+# Use the system line editor when available. Scripted input needs no editor.
+if(UNIX)
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_LIBRARIES edit)
+    check_cxx_source_compiles([=[
+        #include <histedit.h>
+        int main() {
+            EditLine *editor = el_init("juno", stdin, stdout, stderr);
+            el_end(editor);
+            return EL_PROMPT_ESC;
+        }
+    ]=] JUNO_AGENT_HAS_EDITLINE)
+    cmake_pop_check_state()
+    if(JUNO_AGENT_HAS_EDITLINE)
+        target_link_libraries(juno_agent_runtime PRIVATE edit)
+        target_compile_definitions(juno_agent_runtime PRIVATE JUNO_AGENT_HAS_EDITLINE=1)
+    endif()
+endif()
 
 if(NOT TARGET nlohmann_json::nlohmann_json)
     if(NOT JUNO_AGENT_FETCH_DEPS)
@@ -104,20 +127,17 @@ if(JUNO_AGENT_BUILD_TESTS)
 endif()
 
 if(JUNO_AGENT_BUILD_EXAMPLES)
-    add_executable(juno_session_prep_planning_playground
-        examples/session_prep_planning_playground.cpp)
-    add_executable(juno_weather_playground
-        examples/weather_playground.cpp)
-    target_link_libraries(juno_session_prep_planning_playground PRIVATE Juno::Agent)
-    target_link_libraries(juno_weather_playground PRIVATE
+    add_executable(juno_weather_agent
+        examples/weather_agent.cpp)
+    target_link_libraries(juno_weather_agent PRIVATE
         Juno::Agent
         nlohmann_json::nlohmann_json)
     find_package(CURL REQUIRED)
-    target_link_libraries(juno_weather_playground PRIVATE CURL::libcurl)
+    target_link_libraries(juno_weather_agent PRIVATE CURL::libcurl)
 endif()
 
 if(JUNO_AGENT_BUILD_TESTS)
-    include(CTest)
+    enable_testing()
     if(NOT TARGET Catch2::Catch2WithMain)
         if(NOT JUNO_AGENT_FETCH_DEPS)
             find_package(Catch2 3 CONFIG REQUIRED)
@@ -130,7 +150,7 @@ if(JUNO_AGENT_BUILD_TESTS)
             FetchContent_MakeAvailable(catch2)
         endif()
     endif()
-    add_executable(juno_sdk_tests tests/agent_tests.cpp)
+    add_executable(juno_sdk_tests tests/agent_tests.cpp tests/terminal_harness_tests.cpp)
     target_link_libraries(juno_sdk_tests PRIVATE
         Juno::Agent
         juno_sdk_test_support

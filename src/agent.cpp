@@ -353,6 +353,30 @@ Conversation Agent::start_conversation() const {
   return Conversation{model_, std::make_shared<const AgentOptions>(options_), memory_};
 }
 
+Expected<Conversation> Agent::restore_conversation(ConversationSnapshot snapshot) const {
+  const auto is_system = [](const Message &message) { return message.role == Role::System; };
+  const bool has_summary = !snapshot.context.empty() && is_system(snapshot.context.front());
+  if (std::any_of(snapshot.history.begin(), snapshot.history.end(), is_system)
+      || std::any_of(snapshot.context.begin() + has_summary, snapshot.context.end(), is_system)) {
+    return Error{ErrorCode::InvalidConfiguration, "unexpected system message in snapshot"};
+  }
+
+  auto conversation = start_conversation();
+  if (!conversation.history_.empty()) {
+    snapshot.history.insert(snapshot.history.begin(), conversation.history_.front());
+    if (has_summary) {
+      snapshot.context.front().content.insert(
+          0, conversation.context_.front().content + "\n\n"
+      );
+    } else {
+      snapshot.context.insert(snapshot.context.begin(), conversation.context_.front());
+    }
+  }
+  conversation.history_ = std::move(snapshot.history);
+  conversation.context_ = std::move(snapshot.context);
+  return conversation;
+}
+
 std::vector<ToolDefinition> Agent::tool_definitions() const {
   // Return a snapshot without duplicating handlers or exposing mutable state.
   std::vector<ToolDefinition> definitions;
@@ -617,6 +641,19 @@ Expected<RunResult> Conversation::run(
 
 const std::vector<Message> &Conversation::history() const {
   return history_;
+}
+
+ConversationSnapshot Conversation::snapshot() const {
+  ConversationSnapshot result{history_, context_};
+  if (!history_.empty() && history_.front().role == Role::System) {
+    const auto prompt_size = history_.front().content.size();
+    result.history.erase(result.history.begin());
+    if (result.context.front().content.size() == prompt_size)
+      result.context.erase(result.context.begin());
+    else
+      result.context.front().content.erase(0, prompt_size + 2);
+  }
+  return result;
 }
 
 Expected<ContextUsage> Conversation::context_usage() const {

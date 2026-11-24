@@ -19,8 +19,11 @@
 #if JUNO_AGENT_HAS_LLAMA_CPP
 #include <algorithm>
 #include <chat.h>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <llama.h>
+#include <log.h>
 #include <nlohmann/json.hpp>
 
 // The llama.cpp library is used for inference with GGUF models. It provides
@@ -30,6 +33,44 @@ namespace juno::sdk {
 // Implementation of the LlamaCppModel class, which manages inference sessions
 // using llama.cpp.
 namespace {
+
+void write_backend_log(ggml_log_level level, const char *text, void *user_data) {
+  if (auto *file = static_cast<std::FILE *>(user_data)) {
+    std::fputs(text, file);
+    std::fflush(file);
+    return;
+  }
+
+  // Continuation fragments inherit the preceding log level on this thread.
+  thread_local bool show_message = false;
+  if (level != GGML_LOG_LEVEL_CONT)
+    show_message = level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR;
+  if (show_message)
+    std::fputs(text, stderr);
+}
+
+std::FILE *open_backend_log() {
+  const char *path = std::getenv("JUNO_LLAMA_LOG_PATH");
+  if (!path || !*path)
+    return nullptr;
+  auto *file = std::fopen(path, "a");
+  if (!file)
+    std::fprintf(stderr, "Juno: could not open llama.cpp log file '%s'\n", path);
+  return file;
+}
+
+void initialize_backend() {
+  static std::once_flag initialized;
+  std::call_once(initialized, [] {
+    // llama.cpp's logger is process-wide. Keep its file alive for all models.
+    static const std::unique_ptr<std::FILE, decltype(&std::fclose)> log(
+        open_backend_log(), &std::fclose
+    );
+    llama_log_set(write_backend_log, log.get());
+    common_log_set_verbosity_thold(LOG_LEVEL_WARN);
+    llama_backend_init();
+  });
+}
 
 void append_prompt_log(const std::string &path, const std::string &prompt) {
   if (path.empty())
@@ -298,7 +339,7 @@ std::shared_ptr<LlamaCppModel> LlamaCppModel::create(LlamaCppOptions config) {
     );
   if (!std::filesystem::exists(config.model_path))
     throw ModelError(Error{ErrorCode::ModelLoadFailed, "GGUF model file does not exist"});
-  llama_backend_init();
+  initialize_backend();
   auto impl = std::make_unique<Impl>(std::move(config));
   auto params = llama_model_default_params();
   impl->model = llama_model_load_from_file(impl->config.model_path.c_str(), params);

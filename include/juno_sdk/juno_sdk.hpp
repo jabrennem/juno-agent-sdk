@@ -1,9 +1,6 @@
 /**
  * @file juno_sdk.hpp
- * @brief Main header file for the Juno inference model.
- *
- * This file includes the necessary headers for using the Juno inference model,
- * including the Agent class and the LlamaCppModel class.
+ * @brief Main header for the Juno Agent Runtime SDK.
  *
  */
 
@@ -12,3 +9,5 @@
 #include "juno_sdk/agent.hpp"
 #include "juno_sdk/llama_cpp_model.hpp"
 #include "juno_sdk/memory.hpp"
+#include "juno_sdk/session_store.hpp"
+#include "juno_sdk/terminal_harness.hpp"
