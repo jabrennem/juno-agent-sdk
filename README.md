@@ -97,6 +97,10 @@ set in `examples/weather_playground.cpp`:
 
 The playground supports `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). It keeps one recent turn when compacting and supports `/compact` and `/context`.
 
+In a terminal, type `/` and press Tab to list commands, or type a prefix such as
+`/hist` and press Tab to complete it. This uses the system libedit when available
+(included with the macOS SDK and available as `libedit-dev` on Debian and Ubuntu).
+
 The weather playground saves conversations in `~/.juno/sessions/weather/`. After restarting, use `/sessions` to see the 20 most recently updated conversations and `/sessions 2` to browse older ones. Use `/resume ID` to see recent exchanges and continue under the same ID. Use `/new` to start fresh or `/delete ID` to remove a saved conversation.
 
 Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default. Set `LlamaCppOptions::chat_template_override` to supply a known compatible template name.

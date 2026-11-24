@@ -6,6 +6,13 @@
 #include <sstream>
 #include <utility>
 
+#ifdef JUNO_AGENT_HAS_EDITLINE
+#include <array>
+#include <cstdio>
+#include <histedit.h>
+#include <unistd.h>
+#endif
+
 namespace juno::sdk {
 namespace {
 
@@ -52,6 +59,124 @@ std::string format_threshold_usage(const ContextUsage &usage) {
          << "% of compaction threshold";
   return output.str();
 }
+
+class TerminalInput {
+public:
+  TerminalInput(std::istream &input, const HarnessOptions &options)
+      : input_(input), options_(options) {
+#ifdef JUNO_AGENT_HAS_EDITLINE
+    if (&input != &std::cin || options.output != &std::cout || !isatty(fileno(stdin)) ||
+        !isatty(fileno(stdout)))
+      return;
+
+    prompt_ = options.color && !options.prompt.empty()
+                  ? "\001" + std::string(kAccent) + "\001" + options.prompt
+                  : options.prompt;
+    auto *editor = el_init("juno", stdin, stdout, stderr);
+    if (!editor)
+      return;
+    if (el_set(editor, EL_CLIENTDATA, this) == -1 ||
+        el_set(editor, EL_PROMPT_ESC, &TerminalInput::prompt, '\001') == -1 ||
+        el_set(editor, EL_ADDFN, "juno-complete", "Complete a slash command",
+               &TerminalInput::complete) == -1 ||
+        el_set(editor, EL_BIND, "^I", "juno-complete", static_cast<const char *>(nullptr)) == -1) {
+      el_end(editor);
+      return;
+    }
+    editor_.reset(editor);
+#endif
+  }
+
+  Expected<bool> read(std::string &line) {
+#ifdef JUNO_AGENT_HAS_EDITLINE
+    if (editor_) {
+      std::cout.flush();
+      int count = 0;
+      const char *read = el_gets(editor_.get(), &count);
+      if (options_.color && !prompt_.empty())
+        std::cout << kReset << std::flush;
+      if (read && count > 0) {
+        line.assign(read, static_cast<std::size_t>(count));
+        if (line.back() == '\n')
+          line.pop_back();
+        return true;
+      }
+      if (count >= 0)
+        return false;
+      return Error{ErrorCode::InvalidConfiguration, "could not read terminal input"};
+    }
+#endif
+    if (auto *output = options_.output) {
+      if (!options_.prompt.empty())
+        write_colored(options_, kAccent, options_.prompt);
+      output->flush();
+    }
+    if (std::getline(input_, line))
+      return true;
+    if (input_.bad() || !input_.eof())
+      return Error{ErrorCode::InvalidConfiguration, "could not read terminal input"};
+    return false;
+  }
+
+private:
+#ifdef JUNO_AGENT_HAS_EDITLINE
+  static TerminalInput &state(EditLine *editor) {
+    void *data = nullptr;
+    el_get(editor, EL_CLIENTDATA, &data);
+    return *static_cast<TerminalInput *>(data);
+  }
+
+  static char *prompt(EditLine *editor) { return state(editor).prompt_.data(); }
+
+  static unsigned char complete(EditLine *editor, int) {
+    const auto *line = el_line(editor);
+    if (line->cursor != line->lastchar)
+      return CC_NORM;
+    const auto prefix = trim(std::string_view(line->buffer, line->lastchar - line->buffer));
+    if (!prefix.starts_with('/') || prefix.data() + prefix.size() != line->lastchar)
+      return CC_NORM;
+
+    const auto &options = state(editor).options_;
+    // A trailing space helps users enter arguments after completing these commands.
+    constexpr std::array common{"/help", "/tools", "/history", "/new", "/quit", "/clear", "/exit"};
+    constexpr std::array compaction{"/compact", "/context"};
+    constexpr std::array sessions{"/sessions ", "/resume ", "/delete "};
+    std::array<const char *, common.size() + compaction.size() + sessions.size()> matches;
+    std::size_t count = 0;
+    const auto collect = [&](const auto &commands) {
+      for (const auto *command : commands) {
+        if (std::string_view(command).starts_with(prefix))
+          matches[count++] = command;
+      }
+    };
+    collect(common);
+    if (options.compaction)
+      collect(compaction);
+    if (options.session_store)
+      collect(sessions);
+    if (count == 0)
+      return CC_NORM;
+    if (count == 1) {
+      const auto *suffix = matches[0] + prefix.size();
+      return *suffix && el_insertstr(editor, suffix) == 0 ? CC_REFRESH : CC_NORM;
+    }
+
+    std::fputc('\n', stdout);
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto command = trim(matches[i]);
+      std::fprintf(stdout, "%.*s%s", static_cast<int>(command.size()), command.data(),
+                   i + 1 == count ? "\n" : "  ");
+    }
+    std::fflush(stdout);
+    return CC_REDISPLAY;
+  }
+
+  std::string prompt_;
+  std::unique_ptr<EditLine, decltype(&el_end)> editor_{nullptr, &el_end};
+#endif
+  std::istream &input_;
+  const HarnessOptions &options_;
+};
 
 } // namespace
 
@@ -178,14 +303,13 @@ Expected<void> Harness::run_interactive(std::istream &input) {
   if (output && !options_.banner.empty())
     write_colored(options_, kAccent, options_.banner) << '\n';
   print_help();
+  TerminalInput terminal(input, options_);
   for (std::string line;;) {
-    if (output) {
-      if (!options_.prompt.empty())
-        write_colored(options_, kAccent, options_.prompt);
-      output->flush();
-    }
-    if (!std::getline(input, line))
-      break;
+    auto read = terminal.read(line);
+    if (!read)
+      return read.error();
+    if (!read.value())
+      return {};
     const auto command = trim(line);
     const auto separator = command.find_first_of(" \t");
     const auto name = command.substr(0, separator);
@@ -228,9 +352,6 @@ Expected<void> Harness::run_interactive(std::istream &input) {
         report_error("Run failed", result.error());
     }
   }
-  if (input.bad() || !input.eof())
-    return Error{ErrorCode::InvalidConfiguration, "could not read terminal input"};
-  return {};
 }
 
 void Harness::print_help() const {

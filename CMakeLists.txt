@@ -27,6 +27,27 @@ target_include_directories(juno_agent_runtime
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(juno_agent_runtime PRIVATE JUNO_AGENT_HAS_LLAMA_CPP=$<BOOL:${JUNO_AGENT_ENABLE_LLAMA_CPP}>)
 
+# Use the system line editor when available. Scripted input needs no editor.
+if(UNIX)
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_LIBRARIES edit)
+    check_cxx_source_compiles([=[
+        #include <histedit.h>
+        int main() {
+            EditLine *editor = el_init("juno", stdin, stdout, stderr);
+            el_end(editor);
+            return EL_PROMPT_ESC;
+        }
+    ]=] JUNO_AGENT_HAS_EDITLINE)
+    cmake_pop_check_state()
+    if(JUNO_AGENT_HAS_EDITLINE)
+        target_link_libraries(juno_agent_runtime PRIVATE edit)
+        target_compile_definitions(juno_agent_runtime PRIVATE JUNO_AGENT_HAS_EDITLINE=1)
+    endif()
+endif()
+
 if(NOT TARGET nlohmann_json::nlohmann_json)
     if(NOT JUNO_AGENT_FETCH_DEPS)
         find_package(nlohmann_json CONFIG REQUIRED)
