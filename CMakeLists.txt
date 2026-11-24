@@ -6,7 +6,7 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(JUNO_AGENT_BUILD_TESTS "Build Juno Agent Runtime SDK unit tests" OFF)
-option(JUNO_AGENT_BUILD_EXAMPLES "Build Juno Agent Runtime SDK playground executables" ON)
+option(JUNO_AGENT_BUILD_EXAMPLES "Build the Juno Agent Runtime SDK weather playground" ON)
 option(JUNO_AGENT_ENABLE_LLAMA_CPP "Build the in-process llama.cpp model" ON)
 option(JUNO_AGENT_FETCH_DEPS "Fetch third-party dependencies when needed" ON)
 option(JUNO_AGENT_BUILD_LLAMA_SERVER "Build llama.cpp's local HTTP server" OFF)
@@ -106,11 +106,8 @@ if(JUNO_AGENT_BUILD_TESTS)
 endif()
 
 if(JUNO_AGENT_BUILD_EXAMPLES)
-    add_executable(juno_session_prep_planning_playground
-        examples/session_prep_planning_playground.cpp)
     add_executable(juno_weather_playground
         examples/weather_playground.cpp)
-    target_link_libraries(juno_session_prep_planning_playground PRIVATE Juno::Agent)
     target_link_libraries(juno_weather_playground PRIVATE
         Juno::Agent
         nlohmann_json::nlohmann_json)

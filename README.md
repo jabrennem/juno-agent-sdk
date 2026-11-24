@@ -55,7 +55,7 @@ On macOS, llama.cpp selects Metal support when it is available. Linux defaults t
 
 ## Build
 
-The simplest path is the repository build helper. It configures CMake, builds the library and playgrounds, and runs CTest:
+The simplest path is the repository build helper. It configures CMake, builds the library and weather playground, and runs CTest:
 
 ```sh
 ./build.sh
@@ -79,28 +79,27 @@ Useful CMake options:
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `JUNO_AGENT_BUILD_TESTS` | `OFF` | Build the Catch2 unit test executable and register it with CTest. |
-| `JUNO_AGENT_BUILD_EXAMPLES` | `ON` | Build the session-prep and weather playgrounds. |
+| `JUNO_AGENT_BUILD_EXAMPLES` | `ON` | Build the weather playground. |
 | `JUNO_AGENT_ENABLE_LLAMA_CPP` | `ON` | Fetch and compile the in-process llama.cpp model. Set to `OFF` for a model-free build. |
 | `JUNO_AGENT_FETCH_DEPS` | `ON` | Fetch pinned dependencies; set `OFF` to use installed packages. |
 | `JUNO_AGENT_BUILD_LLAMA_SERVER` | `OFF` | Build llama.cpp's local HTTP server and tools when llama.cpp is enabled. |
 
 `build.sh` defaults to an optimized Release build and accepts any additional CMake cache arguments. Set `JUNO_AGENT_BUILD_TYPE=Debug` when debugging, set `JUNO_AGENT_BUILD_DIR` to choose the build directory, and set `JUNO_AGENT_SKIP_TESTS=1` when you only want compilation. If CMake is installed outside your `PATH`, set `CMAKE_BIN=/path/to/cmake` (and `CTEST_BIN=/path/to/ctest`).
 
-## Run the playgrounds
+## Run the weather playground
 
-Each playground takes a path to a local GGUF model. The weather playground keeps its token limits
-fixed in `examples/weather_playground.cpp`:
+The weather playground takes a path to a local GGUF model. Its token limits are
+set in `examples/weather_playground.cpp`:
 
 ```sh
-./build-llama/juno_session_prep_planning_playground /absolute/path/to/model.gguf
 ./build-llama/juno_weather_playground /absolute/path/to/model.gguf
 ```
 
-Both playgrounds support `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). The weather playground keeps one recent turn when compacting and supports `/compact` and `/context`.
+The playground supports `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). It keeps one recent turn when compacting and supports `/compact` and `/context`.
 
 The weather playground saves conversations in `~/.juno/sessions/weather/`. After restarting, use `/sessions` to see the 20 most recently updated conversations and `/sessions 2` to browse older ones. Use `/resume ID` to see recent exchanges and continue under the same ID. Use `/new` to start fresh or `/delete ID` to remove a saved conversation.
 
-The planning playground creates a session-preparation plan from raw WAV metadata and a mix template. Its tools simulate DAW operations and can be replaced with calls into a production project service. Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default. Set `LlamaCppOptions::chat_template_override` to supply a known compatible template name.
+Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default. Set `LlamaCppOptions::chat_template_override` to supply a known compatible template name.
 
 ## Unit tests
 
@@ -348,5 +347,5 @@ Juno uses a small JSON tool protocol rather than provider-native tool calling. T
 | `test_support/fake_model.cpp` | Deterministic scripted model for build-only tests. |
 | `test_support/juno_sdk/fake_model.hpp` | Build-only fake model API for tests. |
 | `src/llama_cpp_model.cpp` | Private direct llama.cpp adapter. |
-| `examples` | Independent session-prep planning and weather playground executables. |
+| `examples` | Weather playground and its steering document. |
 | `tests` | Fake-model unit tests. |
