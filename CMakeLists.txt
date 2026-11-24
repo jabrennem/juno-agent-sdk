@@ -6,14 +6,14 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(JUNO_AGENT_BUILD_TESTS "Build Juno Agent Runtime SDK unit tests" OFF)
-option(JUNO_AGENT_BUILD_EXAMPLES "Build the Juno Agent Runtime SDK weather playground" ON)
+option(JUNO_AGENT_BUILD_EXAMPLES "Build the Weather Agent example" OFF)
 option(JUNO_AGENT_ENABLE_LLAMA_CPP "Build the in-process llama.cpp model" ON)
 option(JUNO_AGENT_FETCH_DEPS "Fetch third-party dependencies when needed" ON)
 option(JUNO_AGENT_BUILD_LLAMA_SERVER "Build llama.cpp's local HTTP server" OFF)
 
 add_library(juno_agent_runtime SHARED
     src/agent.cpp
-    src/harness.cpp
+    src/terminal_harness.cpp
     src/memory.cpp
     src/session_store.cpp
     src/llama_cpp_model.cpp)
@@ -127,17 +127,17 @@ if(JUNO_AGENT_BUILD_TESTS)
 endif()
 
 if(JUNO_AGENT_BUILD_EXAMPLES)
-    add_executable(juno_weather_playground
-        examples/weather_playground.cpp)
-    target_link_libraries(juno_weather_playground PRIVATE
+    add_executable(juno_weather_agent
+        examples/weather_agent.cpp)
+    target_link_libraries(juno_weather_agent PRIVATE
         Juno::Agent
         nlohmann_json::nlohmann_json)
     find_package(CURL REQUIRED)
-    target_link_libraries(juno_weather_playground PRIVATE CURL::libcurl)
+    target_link_libraries(juno_weather_agent PRIVATE CURL::libcurl)
 endif()
 
 if(JUNO_AGENT_BUILD_TESTS)
-    include(CTest)
+    enable_testing()
     if(NOT TARGET Catch2::Catch2WithMain)
         if(NOT JUNO_AGENT_FETCH_DEPS)
             find_package(Catch2 3 CONFIG REQUIRED)
@@ -150,7 +150,7 @@ if(JUNO_AGENT_BUILD_TESTS)
             FetchContent_MakeAvailable(catch2)
         endif()
     endif()
-    add_executable(juno_sdk_tests tests/agent_tests.cpp tests/harness_tests.cpp)
+    add_executable(juno_sdk_tests tests/agent_tests.cpp tests/terminal_harness_tests.cpp)
     target_link_libraries(juno_sdk_tests PRIVATE
         Juno::Agent
         juno_sdk_test_support

@@ -11,16 +11,18 @@ public dependency.
 
 ## Build and test
 
-Use the repository helper for normal validation:
+Use the repository helper to build the SDK and run the test suite:
 
 ```sh
-./build.sh
+./build.sh --test
 ```
+
+Add `--examples` when a change affects the Weather Agent example.
 
 For a faster model-free test build, use:
 
 ```sh
-JUNO_AGENT_BUILD_DIR=build-test ./build.sh \
+JUNO_AGENT_BUILD_DIR=build-test ./build.sh --test \
   -DJUNO_AGENT_ENABLE_LLAMA_CPP=OFF
 ```
 
@@ -28,7 +30,6 @@ Useful environment variables are:
 
 - `JUNO_AGENT_BUILD_DIR` to select a build directory.
 - `JUNO_AGENT_BUILD_TYPE` to select the CMake build type.
-- `JUNO_AGENT_SKIP_TESTS=1` to compile without running CTest.
 - `CMAKE_BIN` and `CTEST_BIN` when those tools are not on `PATH`.
 
 When changing installation, exported targets, or public headers, also verify a
@@ -129,7 +130,7 @@ affect only subsequently created conversations.
   require a GGUF model or network inference.
 - Cover both the successful path and relevant failures, including history and
   callback ordering when behavior is externally observable.
-- Run the narrowest relevant build while iterating, then run `./build.sh` before
+- Run the narrowest relevant build while iterating, then run `./build.sh --test` before
   handing off changes when dependencies are available.
 - If full validation cannot run because dependency fetching or a local model is
   unavailable, report exactly what was and was not verified.

@@ -6,10 +6,10 @@ Juno Agent Runtime is a C++20 SDK for embedding tool-using agents in native apps
 
 Juno runs the agent loop in your app. The bundled `LlamaCppModel` runs GGUF
 inference in the same process. Implement `Model` for another local or remote
-backend. Tools can call remote services, as the weather playground does.
+backend. Tools can call remote services, as the Weather Agent example does.
 [LlamaCppModel API](include/juno_sdk/llama_cpp_model.hpp) ·
 [Model API](include/juno_sdk/model.hpp) ·
-[Weather playground](examples/weather_playground.cpp)
+[Weather Agent](examples/weather_agent.cpp)
 
 An `Agent` defines reusable instructions and tools. Each `Conversation` takes an
 immutable configuration snapshot and owns its in-memory transcript and
@@ -32,7 +32,7 @@ limit concurrent runs.
 
 Use `Agent`, `Conversation`, `Model`, and `Tool` directly for custom UI or
 scheduling. The playgrounds handle terminal input and output today. The planned
-`Harness` adds synchronous invocation and an interactive loop with shared
+`TerminalHarness` adds synchronous invocation and an interactive loop with shared
 commands. Output streams to stdout by default and can be redirected or disabled.
 [SDK examples](#use-from-another-cmake-application) ·
 [Terminal playgrounds](#run-the-playgrounds) ·
@@ -48,69 +48,70 @@ prompt tokens across generations.
 - CMake 3.20 or newer.
 - A C++20 compiler: Apple Clang on macOS, or Clang/GCC on Linux.
 - Git and network access when CMake is fetching dependencies.
-- libcurl development files when building the weather playground.
-- A GGUF model when using `LlamaCppModel`, including the llama.cpp playgrounds or a real-model smoke test.
+- libcurl development files when building the Weather Agent example.
+- A GGUF model to run the Weather Agent example or use `LlamaCppModel`.
 
 On macOS, llama.cpp selects Metal support when it is available. Linux defaults to CPU; configure llama.cpp’s own CMake options in a parent build if you need CUDA, Vulkan, or another accelerator.
 
 ## Build
 
-The simplest path is the repository build helper. It configures CMake, builds the library and weather playground, and runs CTest:
+`./build.sh` builds the SDK in `build/` with in-process llama.cpp support. You
+only need a GGUF model when you run inference.
 
-```sh
-./build.sh
-```
+| Command | Result |
+| --- | --- |
+| `./build.sh` | Build the SDK. |
+| `./build.sh --examples` | Build the SDK and Weather Agent example. |
+| `./build.sh --test` | Build the SDK and tests, then run CTest. |
+| `./build.sh --examples --test` | Build the SDK, Weather Agent example, and tests, then run CTest. |
 
-The build does not need a model, but it does fetch and compile llama.cpp by default:
-
-```sh
-cmake -S . -B build -DJUNO_AGENT_BUILD_EXAMPLES=ON
-cmake --build build
-```
-
-The llama.cpp model can also be enabled explicitly:
-
-```sh
-JUNO_AGENT_BUILD_DIR=build-llama ./build.sh -DJUNO_AGENT_ENABLE_LLAMA_CPP=ON
-```
-
-Useful CMake options:
+### Advanced CMake options
 
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `JUNO_AGENT_BUILD_TESTS` | `OFF` | Build the Catch2 unit test executable and register it with CTest. |
-| `JUNO_AGENT_BUILD_EXAMPLES` | `ON` | Build the weather playground. |
+| `JUNO_AGENT_BUILD_EXAMPLES` | `OFF` | Build the Weather Agent example. |
 | `JUNO_AGENT_ENABLE_LLAMA_CPP` | `ON` | Fetch and compile the in-process llama.cpp model. Set to `OFF` for a model-free build. |
 | `JUNO_AGENT_FETCH_DEPS` | `ON` | Fetch pinned dependencies; set `OFF` to use installed packages. |
 | `JUNO_AGENT_BUILD_LLAMA_SERVER` | `OFF` | Build llama.cpp's local HTTP server and tools when llama.cpp is enabled. |
 
-`build.sh` defaults to an optimized Release build and accepts any additional CMake cache arguments. Set `JUNO_AGENT_BUILD_TYPE=Debug` when debugging, set `JUNO_AGENT_BUILD_DIR` to choose the build directory, and set `JUNO_AGENT_SKIP_TESTS=1` when you only want compilation. If CMake is installed outside your `PATH`, set `CMAKE_BIN=/path/to/cmake` (and `CTEST_BIN=/path/to/ctest`).
+`build.sh` defaults to Release and passes additional arguments to CMake. Use
+`--examples` and `--test` to enable those targets for the current run. Set
+`JUNO_AGENT_BUILD_TYPE=Debug` when debugging or `JUNO_AGENT_BUILD_DIR` to use
+another directory. If the tools are outside your `PATH`, set `CMAKE_BIN` and
+`CTEST_BIN` to their respective paths.
 
-## Run the weather playground
+## Run Weather Agent
 
-The weather playground takes a path to a local GGUF model. Its token limits are
-set in `examples/weather_playground.cpp`:
+Weather Agent takes a path to a local GGUF model. Its token limits are
+set in `examples/weather_agent.cpp`:
 
 ```sh
-./build-llama/juno_weather_playground /absolute/path/to/model.gguf
+./build.sh --examples
+./build/juno_weather_agent /absolute/path/to/model.gguf
 ```
 
-The playground supports `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). It keeps one recent turn when compacting and supports `/compact` and `/context`.
+Weather Agent supports `/help`, `/history`, `/tools`, `/new` (also `/clear`), and `/quit` (also `/exit`). It keeps one recent turn when compacting and supports `/compact` and `/context`.
 
 In a terminal, type `/` and press Tab to list commands, or type a prefix such as
 `/hist` and press Tab to complete it. This uses the system libedit when available
 (included with the macOS SDK and available as `libedit-dev` on Debian and Ubuntu).
 
-The weather playground saves conversations in `~/.juno/sessions/weather/`. After restarting, use `/sessions` to see the 20 most recently updated conversations and `/sessions 2` to browse older ones. Use `/resume ID` to see recent exchanges and continue under the same ID. Use `/new` to start fresh or `/delete ID` to remove a saved conversation.
+Weather Agent saves conversations in `~/.juno/sessions/weather/`. After restarting, use `/sessions` to see the 20 most recently updated conversations and `/sessions 2` to browse older ones. Use `/resume ID` to see recent exchanges and continue under the same ID. Use `/new` to start fresh or `/delete ID` to remove a saved conversation.
 
 Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default. Set `LlamaCppOptions::chat_template_override` to supply a known compatible template name.
 
 ## Unit tests
 
 ```sh
-cmake -S . -B build-test -DJUNO_AGENT_BUILD_TESTS=ON
-cmake --build build-test
-ctest --test-dir build-test --output-on-failure
+./build.sh --test
+```
+
+For a faster build that runs the tests with the fake model and skips compiling
+llama.cpp, use a separate build directory.
+
+```sh
+JUNO_AGENT_BUILD_DIR=build-test ./build.sh --test -DJUNO_AGENT_ENABLE_LLAMA_CPP=OFF
 ```
 
 The automated tests link the build-only `juno_sdk_test_support` target, which provides `FakeModel`; they do not download a model. They cover final responses, tool loops, unknown tools, iteration limits, callbacks, handler-owned argument validation, and independent conversation histories.
@@ -142,7 +143,7 @@ target_link_libraries(my_app PRIVATE Juno::Agent)
 
 ### Terminal harness quickstart
 
-`Harness` starts a conversation from a configured `Agent`. Each call to `invoke()`
+`TerminalHarness` starts a conversation from a configured `Agent`. Each call to `invoke()`
 continues that conversation, streams the assistant’s text to standard output,
 and returns an `Expected<RunResult>`.
 
@@ -155,7 +156,7 @@ int main() {
   using namespace juno::sdk;
   auto model = LlamaCppModel::create({.model_path = "/path/to/model.gguf"});
   auto agent = Agent::create({.model = model, .system_prompt = "Be concise."});
-  auto harness = Harness::create({.agent = agent});
+  auto harness = TerminalHarness::create({.agent = agent});
   auto result = harness.invoke("Say hello.");
   if (!result) {
     std::cerr << result.error().message << '\n';
@@ -166,7 +167,7 @@ int main() {
 ```
 
 For a terminal loop, call `harness.run_interactive()`. Pass an input stream to read
-scripted prompts and commands. Set `HarnessOptions::output` to a stream pointer
+scripted prompts and commands. Set `TerminalHarnessOptions::output` to a stream pointer
 to redirect output or to `nullptr` for silent operation. Set `show_tools` to display
 tool calls and completions. Use `banner` for a startup title, `help` for
 application-specific instructions, and `compaction` to enable `/compact` and `/context`.
@@ -182,7 +183,7 @@ if (!store) {
   std::cerr << store.error().message << '\n';
   return 1;
 }
-auto harness = Harness::create({.agent = agent, .session_store = store.value()});
+auto harness = TerminalHarness::create({.agent = agent, .session_store = store.value()});
 auto result = harness.run_interactive();
 return result ? 0 : 1;
 ```
@@ -351,5 +352,5 @@ Juno uses a small JSON tool protocol rather than provider-native tool calling. T
 | `test_support/fake_model.cpp` | Deterministic scripted model for build-only tests. |
 | `test_support/juno_sdk/fake_model.hpp` | Build-only fake model API for tests. |
 | `src/llama_cpp_model.cpp` | Private direct llama.cpp adapter. |
-| `examples` | Weather playground and its steering document. |
+| `examples` | Weather Agent and its steering document. |
 | `tests` | Fake-model unit tests. |

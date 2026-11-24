@@ -259,6 +259,7 @@ int main(int argc, char **argv) {
        .handler = weather_forecast_tool_handler}
   );
 
+  // Create a tool for converting temperatures between Celsius and Fahrenheit
   auto conversion_tool = juno::sdk::Tool::create(
       {.name = "temperature_unit_conversion",
        .description = "Convert a temperature between Celsius and Fahrenheit. Always use this tool "
@@ -277,6 +278,7 @@ int main(int argc, char **argv) {
        .handler = conversion_tool_handler}
   );
 
+  // Load steering files
   auto steering = juno::sdk::Steering::create({
       .files = {"examples/weather-steering.md"},
   });
@@ -297,6 +299,7 @@ int main(int argc, char **argv) {
       .memory = weather_memory,
   });
 
+  // Optionally enable saved sessions in ~/.juno/sessions/weather
   std::optional<juno::sdk::SessionStore> sessions;
   if (const char *home = std::getenv("HOME"); home && *home) {
     auto store = juno::sdk::SessionStore::create({
@@ -308,12 +311,13 @@ int main(int argc, char **argv) {
       std::cerr << "Could not enable saved weather sessions: " << store.error().message << '\n';
   }
 
-  auto harness = juno::sdk::Harness::create({
+  // Create a harness to run the interactive Weather Agent example
+  auto harness = juno::sdk::TerminalHarness::create({
       .agent = std::move(weather_agent),
       .show_tools = true,
       .show_reasoning = true,
       .prompt = "[weather] > ",
-      .banner = "Weather playground (" + std::to_string(kContextSize) + " context tokens, " +
+      .banner = "Weather Agent (" + std::to_string(kContextSize) + " context tokens, " +
                 std::to_string(kGenerationTokens) + " generation tokens)",
       .help = "Ask for a weather forecast for any city.\n"
               "Example: What's the weather in Seattle for five days?\n"
@@ -326,6 +330,7 @@ int main(int argc, char **argv) {
       .session_store = std::move(sessions),
   });
 
+  // Run the interactive Weather Agent example
   auto result = harness.run_interactive();
   curl_cleanup();
   if (!result) {

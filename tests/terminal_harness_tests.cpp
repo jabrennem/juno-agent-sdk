@@ -41,7 +41,7 @@ private:
   std::streambuf *previous_;
 };
 
-TEST_CASE("Harness invoke streams text and returns the turn result") {
+TEST_CASE("TerminalHarness invoke streams text and returns the turn result") {
   auto model = std::make_shared<FakeModel>(std::vector{
       FakeStep::final("Default"),
       FakeStep::final("Redirected"),
@@ -50,7 +50,7 @@ TEST_CASE("Harness invoke streams text and returns the turn result") {
   auto agent = Agent::create({.model = model});
   CoutCapture console;
 
-  auto harness = Harness::create({.agent = agent});
+  auto harness = TerminalHarness::create({.agent = agent});
   const auto first = harness.invoke("Hello");
   REQUIRE(first);
   CHECK(first.value().final_text == "Default");
@@ -58,18 +58,18 @@ TEST_CASE("Harness invoke streams text and returns the turn result") {
   CHECK(console.output.str() == "\033[38;2;229;233;239mDefault\033[0m\n");
 
   std::ostringstream redirected;
-  auto custom = Harness::create({.agent = agent, .output = &redirected, .color = false});
+  auto custom = TerminalHarness::create({.agent = agent, .output = &redirected, .color = false});
   REQUIRE(custom.invoke("Hello"));
   CHECK(redirected.str() == "Redirected\n");
 
-  auto silent = Harness::create({.agent = agent, .output = nullptr});
+  auto silent = TerminalHarness::create({.agent = agent, .output = nullptr});
   const auto last = silent.invoke("Hello");
   REQUIRE(last);
   CHECK(last.value().final_text == "Silent");
   CHECK(console.output.str() == "\033[38;2;229;233;239mDefault\033[0m\n");
 }
 
-TEST_CASE("Harness interactive commands share the invocation path") {
+TEST_CASE("TerminalHarness interactive commands share the invocation path") {
   auto model = std::make_shared<FakeModel>(std::vector{
       FakeStep::calls({{"call-1", "lookup", "{}"}}),
       FakeStep::final("Found it"),
@@ -81,7 +81,7 @@ TEST_CASE("Harness interactive commands share the invocation path") {
                  [](std::string_view) -> Expected<std::string> { return "a result"; }}},
   });
   std::ostringstream output;
-  auto harness = Harness::create({
+  auto harness = TerminalHarness::create({
       .agent = agent,
       .output = &output,
       .show_tools = true,
@@ -105,13 +105,13 @@ TEST_CASE("Harness interactive commands share the invocation path") {
   CHECK(model->requests().back().front().content == "Next prompt");
 }
 
-TEST_CASE("Harness starts the interactive terminal in color") {
+TEST_CASE("TerminalHarness starts the interactive terminal in color") {
   auto model = std::make_shared<FakeModel>(std::vector{
       FakeStep::final("Hello"),
       FakeStep::failure({ErrorCode::GenerationFailed, "generation failed"}),
   });
   std::ostringstream output;
-  auto harness = Harness::create({
+  auto harness = TerminalHarness::create({
       .agent = Agent::create({.model = model}),
       .output = &output,
       .prompt = "[test] > ",
@@ -132,7 +132,7 @@ TEST_CASE("Harness starts the interactive terminal in color") {
   CHECK(text.find("Playground", text.find("Playground") + 1) == std::string::npos);
 }
 
-TEST_CASE("Harness colors tool activity and replies by default") {
+TEST_CASE("TerminalHarness colors tool activity and replies by default") {
   auto model = std::make_shared<FakeModel>(std::vector{
       FakeStep::calls({{"call-1", "lookup", "{}"}}),
       FakeStep::final("Found it"),
@@ -143,7 +143,7 @@ TEST_CASE("Harness colors tool activity and replies by default") {
                  [](std::string_view) -> Expected<std::string> { return "a result"; }}},
   });
   std::ostringstream output;
-  auto harness = Harness::create({
+  auto harness = TerminalHarness::create({
       .agent = agent,
       .output = &output,
       .show_tools = true,
@@ -157,7 +157,7 @@ TEST_CASE("Harness colors tool activity and replies by default") {
                         "\033[38;2;229;233;239mFound it\033[0m\n");
 }
 
-TEST_CASE("Harness keeps a checkpoint across compaction, failure, and restart") {
+TEST_CASE("TerminalHarness keeps a checkpoint across compaction, failure, and restart") {
   const SessionDirectory directory;
   const auto store = SessionStore::create({.directory = directory.path});
   REQUIRE(store);
@@ -175,7 +175,7 @@ TEST_CASE("Harness keeps a checkpoint across compaction, failure, and restart") 
                  [](std::string_view) -> Expected<std::string> { return "sunny"; }}},
   });
   std::ostringstream output;
-  auto harness = Harness::create({
+  auto harness = TerminalHarness::create({
       .agent = agent,
       .output = &output,
       .compaction = CompactionOptions{.preserve_recent_turns = 1},
@@ -226,7 +226,7 @@ TEST_CASE("Harness keeps a checkpoint across compaction, failure, and restart") 
       FakeStep::final("Tomorrow is rainy."),
   });
   int forecast_calls = 0;
-  auto reopened = Harness::create({
+  auto reopened = TerminalHarness::create({
       .agent = Agent::create({
           .model = next_model,
           .system_prompt = "Current instructions.",
@@ -258,7 +258,7 @@ TEST_CASE("Harness keeps a checkpoint across compaction, failure, and restart") 
   CHECK(updated.value().front().updated_at > original.value().info.updated_at);
 }
 
-TEST_CASE("Harness paginates and deletes saved sessions") {
+TEST_CASE("TerminalHarness paginates and deletes saved sessions") {
   const SessionDirectory directory;
   const auto store = SessionStore::create({.directory = directory.path});
   REQUIRE(store);
@@ -271,7 +271,7 @@ TEST_CASE("Harness paginates and deletes saved sessions") {
   const auto &oldest = sessions.value().back();
   auto model = std::make_shared<FakeModel>(std::vector<FakeStep>{});
   std::ostringstream output;
-  auto harness = Harness::create({
+  auto harness = TerminalHarness::create({
       .agent = Agent::create({.model = model}),
       .output = &output,
       .session_store = store.value(),

@@ -19,7 +19,7 @@ public:
 int main() {
   auto model = std::make_shared<PackageConsumerModel>();
   auto agent = juno::sdk::Agent::create({.model = model});
-  auto harness = juno::sdk::Harness::create({.agent = agent});
+  auto harness = juno::sdk::TerminalHarness::create({.agent = agent});
   const auto result = harness.invoke("Say hello.");
   return result && result.value().final_text == "Hello from the installed SDK." ? 0 : 1;
 }

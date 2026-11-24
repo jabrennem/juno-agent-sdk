@@ -8,7 +8,7 @@
 
 namespace juno::sdk {
 
-struct HarnessOptions {
+struct TerminalHarnessOptions {
   Agent agent;
   /** Borrowed terminal output stream. Set to nullptr to silence output. */
   std::ostream *output{&std::cout};
@@ -28,9 +28,9 @@ struct HarnessOptions {
 };
 
 /** Synchronous terminal interface to one active conversation, used from a single thread. */
-class Harness {
+class TerminalHarness {
 public:
-  [[nodiscard]] static Harness create(HarnessOptions options);
+  [[nodiscard]] static TerminalHarness create(TerminalHarnessOptions options);
 
   /** Streams a turn and returns its result. Failed turns leave the active transcript intact. */
   [[nodiscard]] Expected<RunResult> invoke(std::string_view prompt,
@@ -43,7 +43,7 @@ public:
   [[nodiscard]] const std::optional<std::string> &active_session_id() const;
 
 private:
-  explicit Harness(HarnessOptions options);
+  explicit TerminalHarness(TerminalHarnessOptions options);
   Expected<void> checkpoint(const Conversation &conversation);
   void print_help() const;
   void print_tools() const;
@@ -54,7 +54,7 @@ private:
   void delete_session(std::string_view id);
   void report_error(std::string_view operation, const Error &error) const;
 
-  HarnessOptions options_;
+  TerminalHarnessOptions options_;
   Conversation conversation_;
   std::optional<std::string> session_id_;
 };

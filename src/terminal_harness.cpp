@@ -1,4 +1,4 @@
-#include "juno_sdk/harness.hpp"
+#include "juno_sdk/terminal_harness.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -24,7 +24,7 @@ constexpr std::string_view kSuccess = "\033[38;2;95;210;143m";
 constexpr std::string_view kError = "\033[38;2;255;107;107m";
 constexpr std::string_view kReset = "\033[0m";
 
-std::ostream &write_colored(const HarnessOptions &options, std::string_view color,
+std::ostream &write_colored(const TerminalHarnessOptions &options, std::string_view color,
                             const auto &...parts) {
   auto &output = *options.output;
   if (options.color)
@@ -62,7 +62,7 @@ std::string format_threshold_usage(const ContextUsage &usage) {
 
 class TerminalInput {
 public:
-  TerminalInput(std::istream &input, const HarnessOptions &options)
+  TerminalInput(std::istream &input, const TerminalHarnessOptions &options)
       : input_(input), options_(options) {
 #ifdef JUNO_AGENT_HAS_EDITLINE
     if (&input != &std::cin || options.output != &std::cout || !isatty(fileno(stdin)) ||
@@ -175,17 +175,19 @@ private:
   std::unique_ptr<EditLine, decltype(&el_end)> editor_{nullptr, &el_end};
 #endif
   std::istream &input_;
-  const HarnessOptions &options_;
+  const TerminalHarnessOptions &options_;
 };
 
 } // namespace
 
-Harness Harness::create(HarnessOptions options) { return Harness(std::move(options)); }
+TerminalHarness TerminalHarness::create(TerminalHarnessOptions options) {
+  return TerminalHarness(std::move(options));
+}
 
-Harness::Harness(HarnessOptions options)
+TerminalHarness::TerminalHarness(TerminalHarnessOptions options)
     : options_(std::move(options)), conversation_(options_.agent.start_conversation()) {}
 
-Expected<RunResult> Harness::invoke(std::string_view prompt, std::stop_token stop_token) {
+Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_token stop_token) {
   auto *output = options_.output;
   bool line_open = false;
   bool streamed_text = false;
@@ -267,7 +269,7 @@ Expected<RunResult> Harness::invoke(std::string_view prompt, std::stop_token sto
   return result;
 }
 
-Expected<void> Harness::checkpoint(const Conversation &conversation) {
+Expected<void> TerminalHarness::checkpoint(const Conversation &conversation) {
   if (!options_.session_store)
     return {};
   auto saved = options_.session_store->save(conversation.snapshot(), session_id_);
@@ -277,12 +279,12 @@ Expected<void> Harness::checkpoint(const Conversation &conversation) {
   return {};
 }
 
-void Harness::new_session() {
+void TerminalHarness::new_session() {
   conversation_.clear();
   session_id_.reset();
 }
 
-Expected<void> Harness::resume_session(std::string_view id) {
+Expected<void> TerminalHarness::resume_session(std::string_view id) {
   if (!options_.session_store)
     return Error{ErrorCode::InvalidConfiguration, "no session store configured"};
   auto saved = options_.session_store->load(id);
@@ -296,14 +298,18 @@ Expected<void> Harness::resume_session(std::string_view id) {
   return {};
 }
 
-const std::optional<std::string> &Harness::active_session_id() const { return session_id_; }
+const std::optional<std::string> &TerminalHarness::active_session_id() const { return session_id_; }
 
-Expected<void> Harness::run_interactive(std::istream &input) {
+// Run an interactive loop reading prompts and commands from the user.
+Expected<void> TerminalHarness::run_interactive(std::istream &input) {
+  // Print the optional banner once at the start of the interactive loop.
   auto *output = options_.output;
   if (output && !options_.banner.empty())
     write_colored(options_, kAccent, options_.banner) << '\n';
   print_help();
+  // Read lines from the terminal until EOF or a quit command is received.
   TerminalInput terminal(input, options_);
+  // The user can enter a prompt to invoke the agent, or a slash command to perform an action.
   for (std::string line;;) {
     auto read = terminal.read(line);
     if (!read)
@@ -354,7 +360,7 @@ Expected<void> Harness::run_interactive(std::istream &input) {
   }
 }
 
-void Harness::print_help() const {
+void TerminalHarness::print_help() const {
   auto *output = options_.output;
   if (!output)
     return;
@@ -370,7 +376,7 @@ void Harness::print_help() const {
         << " /sessions [page], /resume ID, /delete ID\n";
 }
 
-void Harness::print_tools() const {
+void TerminalHarness::print_tools() const {
   auto *output = options_.output;
   if (!output)
     return;
@@ -384,7 +390,7 @@ void Harness::print_tools() const {
     *output << "- " << tool.name << ": " << tool.description << '\n';
 }
 
-void Harness::print_context() const {
+void TerminalHarness::print_context() const {
   auto *output = options_.output;
   if (!output)
     return;
@@ -402,7 +408,7 @@ void Harness::print_context() const {
           << "Context capacity: " << format_token_count(value.context_capacity) << " tokens\n";
 }
 
-void Harness::compact() {
+void TerminalHarness::compact() {
   auto *output = options_.output;
   auto candidate = conversation_;
   const auto result = candidate.compact(*options_.compaction, [&](const AgentEvent &event) {
@@ -435,7 +441,7 @@ void Harness::compact() {
   }
 }
 
-void Harness::print_sessions(std::string_view argument) const {
+void TerminalHarness::print_sessions(std::string_view argument) const {
   auto *output = options_.output;
   if (!output)
     return;
@@ -479,7 +485,7 @@ void Harness::print_sessions(std::string_view argument) const {
     *output << "Use /sessions " << page + 1 << " to browse older sessions.\n";
 }
 
-void Harness::print_recent_exchanges() const {
+void TerminalHarness::print_recent_exchanges() const {
   auto *output = options_.output;
   if (!output)
     return;
@@ -500,7 +506,7 @@ void Harness::print_recent_exchanges() const {
   }
 }
 
-void Harness::delete_session(std::string_view id) {
+void TerminalHarness::delete_session(std::string_view id) {
   auto erased = options_.session_store->erase(id);
   if (!erased) {
     report_error("Could not delete session", erased.error());
@@ -512,7 +518,7 @@ void Harness::delete_session(std::string_view id) {
     *options_.output << "Deleted session " << id << '\n';
 }
 
-void Harness::report_error(std::string_view operation, const Error &error) const {
+void TerminalHarness::report_error(std::string_view operation, const Error &error) const {
   if (options_.output)
     write_colored(options_, kError, operation, ": ", error.message) << '\n';
 }
