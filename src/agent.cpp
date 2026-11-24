@@ -519,6 +519,7 @@ Expected<RunResult> Conversation::run(
   // Prepare the list of tool definitions for the generation request.
   const auto definitions = tool_definitions(*options_);
   std::vector<std::chrono::milliseconds> model_generation_times;
+  std::optional<std::size_t> reused_prompt_tokens{0};
 
   // Run the inference loop for a maximum number of turns as specified in the
   // configuration.
@@ -581,13 +582,21 @@ Expected<RunResult> Conversation::run(
       return make_unexpected(response.error());
     }
 
+    if (reused_prompt_tokens && response.value().reused_prompt_tokens)
+      *reused_prompt_tokens += *response.value().reused_prompt_tokens;
+    else
+      reused_prompt_tokens.reset();
+
     // Add the assistant's response to the conversation history.
     history_.push_back(
         Message{Role::Assistant, response.value().content, response.value().tool_calls}
     );
     context_.push_back(history_.back());
     if (response.value().tool_calls.empty()) {
-      RunResult result{response.value().content, history_, turn, std::move(model_generation_times)};
+      RunResult result{
+          response.value().content, history_, turn, std::move(model_generation_times),
+          reused_prompt_tokens
+      };
       emit(callback, AgentEvent{EventType::Completed, result.final_text, {}});
       return result;
     }

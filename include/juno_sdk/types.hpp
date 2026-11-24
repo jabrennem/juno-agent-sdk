@@ -126,6 +126,8 @@ struct RunResult {
   std::size_t inference_turns{0};
   /** Time spent in each model generation pass, in execution order. */
   std::vector<std::chrono::milliseconds> model_generation_times{};
+  /** Total reuse across the timed model passes. Empty if any pass does not report reuse. */
+  std::optional<std::size_t> reused_prompt_tokens{};
 };
 
 } // namespace juno::sdk

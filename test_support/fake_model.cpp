@@ -62,7 +62,7 @@ Expected<GenerationResponse> FakeModel::generate(
   if (!step.content.empty() && callback) {
     callback(AgentEvent{EventType::TextDelta, step.content, {}});
   }
-  return GenerationResponse{step.content, step.tool_calls};
+  return GenerationResponse{step.content, step.tool_calls, step.reused_prompt_tokens};
 }
 
 std::size_t FakeModel::remaining_steps() const {

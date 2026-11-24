@@ -154,6 +154,9 @@ if(JUNO_AGENT_BUILD_TESTS)
         endif()
     endif()
     add_executable(juno_sdk_tests tests/agent_tests.cpp tests/terminal_harness_tests.cpp)
+    if(JUNO_AGENT_ENABLE_LLAMA_CPP)
+        target_sources(juno_sdk_tests PRIVATE tests/llama_cpp_model_tests.cpp)
+    endif()
     target_link_libraries(juno_sdk_tests PRIVATE
         Juno::Agent
         juno_sdk_test_support

@@ -18,6 +18,12 @@
 
 namespace juno::sdk {
 
+/** Controls inference context retention between generations. */
+enum class PromptCacheRetention {
+  Disabled,
+  MostRecentPrompt,
+};
+
 /** Configuration for the LlamaCpp model. */
 struct LlamaCppOptions {
   std::string model_path;
@@ -39,6 +45,9 @@ struct LlamaCppOptions {
   // Optional override for the chat template used by the model. If empty, the
   // default template will be used.
   std::string chat_template_override;
+
+  // Keep one inference context per model instance for matching prompt prefixes.
+  PromptCacheRetention prompt_cache_retention{PromptCacheRetention::Disabled};
 };
 
 /** Model for handling LlamaCpp inference. */

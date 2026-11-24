@@ -159,6 +159,64 @@ struct PreparedPrompt {
   std::vector<llama_token> tokens;
 };
 
+using ContextPtr = std::unique_ptr<llama_context, decltype(&llama_free)>;
+
+struct RetainedPrompt {
+  ContextPtr context{nullptr, llama_free};
+  std::vector<llama_token> tokens;
+  std::size_t checkpoint_tokens{0};
+  std::vector<uint8_t> recurrent_state;
+};
+
+std::size_t retain_matching_prefix(
+    const RetainedPrompt &retained,
+    const std::vector<llama_token> &next
+) {
+  auto *context = retained.context.get();
+  const auto memory = llama_get_memory(context);
+  // Always decode the final prompt token to produce logits for the new request.
+  const auto match = std::mismatch(
+      next.begin(), next.end() - 1, retained.tokens.begin(), retained.tokens.end()
+  );
+  auto prefix = static_cast<llama_pos>(match.first - next.begin());
+  if (!retained.recurrent_state.empty()) {
+    // Restore the recurrent state at a verified matching prefix. The
+    // attention KV remains in the live context and can be trimmed in place.
+    if (retained.checkpoint_tokens <= static_cast<std::size_t>(prefix)
+        && llama_state_seq_set_data_ext(
+               context, retained.recurrent_state.data(), retained.recurrent_state.size(), 0,
+               LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY
+           ) == retained.recurrent_state.size()) {
+      prefix = static_cast<llama_pos>(retained.checkpoint_tokens);
+    } else {
+      prefix = 0;
+    }
+  } else if (llama_memory_seq_pos_min(memory, 0) != 0) {
+    // Sliding-window caches may have evicted early positions.
+    prefix = 0;
+  }
+  if (prefix > 0
+      && llama_memory_seq_rm(memory, 0, prefix, -1)
+      && llama_memory_seq_pos_max(memory, 0) == prefix - 1) {
+    return static_cast<std::size_t>(prefix);
+  }
+  llama_memory_clear(memory, false);
+  return 0;
+}
+
+void checkpoint_recurrent_state(RetainedPrompt &retained, std::size_t offset) {
+  auto *context = retained.context.get();
+  constexpr auto flags = LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+  retained.checkpoint_tokens = offset;
+  retained.recurrent_state.resize(llama_state_seq_get_size_ext(context, 0, flags));
+  if (!retained.recurrent_state.empty()
+      && llama_state_seq_get_data_ext(
+             context, retained.recurrent_state.data(), retained.recurrent_state.size(), 0, flags
+         ) != retained.recurrent_state.size()) {
+    retained.recurrent_state.clear();
+  }
+}
+
 Expected<PreparedPrompt> prepare_prompt(
     common_chat_templates *chat_templates,
     llama_model *model,
@@ -306,6 +364,7 @@ Expected<GenerationResponse> parse_response(const std::string &text) {
 struct LlamaCppModel::Impl {
   explicit Impl(LlamaCppOptions value) : config(std::move(value)) {}
   ~Impl() {
+    retained_prompt.context.reset();
     chat_templates.reset();
     if (model)
       llama_model_free(model);
@@ -315,6 +374,7 @@ struct LlamaCppModel::Impl {
   llama_model *model{nullptr};
   common_chat_templates_ptr chat_templates;
   std::mutex mutex;
+  RetainedPrompt retained_prompt;
 };
 
 LlamaCppModel::LlamaCppModel(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -391,6 +451,8 @@ Expected<GenerationResponse> LlamaCppModel::generate(
   append_prompt_log(impl_->config.prompt_log_path, prepared.value().text);
   if (callback)
     callback(AgentEvent{EventType::Prompt, prepared.value().text, {}});
+  if (stop_token.stop_requested())
+    return make_unexpected(Error{ErrorCode::Cancelled, "generation was cancelled"});
 
   auto &tokens = prepared.value().tokens;
   const llama_vocab *vocab = llama_model_get_vocab(impl_->model);
@@ -403,7 +465,16 @@ Expected<GenerationResponse> LlamaCppModel::generate(
     );
   }
 
-  // 4. Create an inference context and load the prompt into it.
+  // Take ownership while decoding so failures and exceptions discard any
+  // partially updated context before the next request can acquire the lock.
+  auto retained = std::exchange(impl_->retained_prompt, {});
+  std::size_t offset = 0;
+  if (retained.context)
+    offset = retain_matching_prefix(retained, tokens);
+  if (offset == 0)
+    retained.recurrent_state.clear();
+  const auto reused_prompt_tokens = offset;
+
   auto context_params = llama_context_default_params();
   context_params.n_ctx = static_cast<uint32_t>(impl_->config.context_size);
   // Keep batch_size as the caller's memory/throughput knob. A prompt larger
@@ -415,20 +486,34 @@ Expected<GenerationResponse> LlamaCppModel::generate(
     context_params.n_threads = static_cast<int32_t>(impl_->config.threads);
     context_params.n_threads_batch = static_cast<int32_t>(impl_->config.threads);
   }
-  llama_context *context = llama_init_from_model(impl_->model, context_params);
+  if (!retained.context)
+    retained.context.reset(llama_init_from_model(impl_->model, context_params));
+  llama_context *context = retained.context.get();
   if (!context)
     return make_unexpected(
         Error{ErrorCode::GenerationFailed, "llama.cpp could not create an inference context"}
     );
-  struct ContextGuard {
-    llama_context *value;
-    ~ContextGuard() {
-      llama_free(value);
-    }
-  } context_guard{context};
 
-  for (std::size_t offset = 0; offset < tokens.size();) {
-    const auto chunk_size = std::min<std::size_t>(context_params.n_batch, tokens.size() - offset);
+  const bool retain_prompt =
+      impl_->config.prompt_cache_retention == PromptCacheRetention::MostRecentPrompt;
+  const bool checkpoint_recurrent =
+      retain_prompt && llama_get_memory(context) && llama_model_n_swa(impl_->model) == 0
+      && (llama_model_is_recurrent(impl_->model) || llama_model_is_hybrid(impl_->model));
+  // Leave room for the chat template's generation suffix to change when the
+  // next request appends a reply or a tool result.
+  const auto suffix_size = std::clamp<std::size_t>(tokens.size() / 4, 1, 32);
+  const auto checkpoint_at = std::max(offset, tokens.size() - suffix_size);
+  for (; offset < tokens.size();) {
+    if (stop_token.stop_requested())
+      return make_unexpected(Error{ErrorCode::Cancelled, "generation was cancelled"});
+    if (checkpoint_recurrent && checkpoint_at > 0 && offset == checkpoint_at
+        && (offset != reused_prompt_tokens || retained.recurrent_state.empty())) {
+      checkpoint_recurrent_state(retained, offset);
+    }
+    const auto batch_end = checkpoint_recurrent && offset < checkpoint_at
+                               ? checkpoint_at
+                               : tokens.size();
+    const auto chunk_size = std::min<std::size_t>(context_params.n_batch, batch_end - offset);
     const int decode_result = llama_decode(
         context, llama_batch_get_one(tokens.data() + offset, static_cast<int32_t>(chunk_size))
     );
@@ -520,7 +605,6 @@ Expected<GenerationResponse> LlamaCppModel::generate(
       emit_text(stream_buffer);
     stream_buffer.clear();
   };
-  int32_t position = static_cast<int32_t>(tokens.size());
   for (std::size_t i = 0; i < request.config.max_tokens; ++i) {
     if (stop_token.stop_requested())
       return make_unexpected(Error{ErrorCode::Cancelled, "generation was cancelled"});
@@ -543,13 +627,14 @@ Expected<GenerationResponse> LlamaCppModel::generate(
       generated += delta;
       emit_stream(delta);
     }
+    if (stop_token.stop_requested())
+      return make_unexpected(Error{ErrorCode::Cancelled, "generation was cancelled"});
     llama_token decoded_token = token;
     if (llama_decode(context, llama_batch_get_one(&decoded_token, 1)) != 0) {
       return make_unexpected(
           Error{ErrorCode::GenerationFailed, "llama.cpp failed during token generation"}
       );
     }
-    ++position;
   }
 
   if (!stream_buffer.empty()) {
@@ -567,6 +652,13 @@ Expected<GenerationResponse> LlamaCppModel::generate(
     return response;
   if (!pending_tool_text.empty() && response.value().tool_calls.empty() && callback)
     callback(AgentEvent{EventType::TextDelta, std::move(pending_tool_text), {}});
+  if (stop_token.stop_requested())
+    return make_unexpected(Error{ErrorCode::Cancelled, "generation was cancelled"});
+  response.value().reused_prompt_tokens = reused_prompt_tokens;
+  if (retain_prompt && llama_get_memory(context)) {
+    retained.tokens = std::move(tokens);
+    impl_->retained_prompt = std::move(retained);
+  }
   return response;
 }
 

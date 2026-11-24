@@ -156,10 +156,16 @@ TEST_CASE("TerminalHarness keeps scripted output plain") {
 }
 
 TEST_CASE("TerminalHarness groups successful tool calls and exposes last-turn details") {
+  auto tool_pass = FakeStep::calls(
+      {{"call-1", "look_up", R"({"id":1})"}, {"call-2", "look_up", R"({"id":2})"},
+       {"call-3", "missing", "{}"}}
+  );
+  tool_pass.reused_prompt_tokens = 24;
+  auto answer_pass = FakeStep::final("**Found it**");
+  answer_pass.reused_prompt_tokens = 72;
   auto model = std::make_shared<FakeModel>(std::vector{
-      FakeStep::calls({{"call-1", "look_up", R"({"id":1})"}, {"call-2", "look_up", R"({"id":2})"},
-                       {"call-3", "missing", "{}"}}),
-      FakeStep::final("**Found it**"),
+      tool_pass,
+      answer_pass,
   });
   auto agent = Agent::create({
       .model = model,
@@ -179,6 +185,7 @@ TEST_CASE("TerminalHarness groups successful tool calls and exposes last-turn de
   REQUIRE(result);
   CHECK(result.value().final_text == "**Found it**");
   CHECK(result.value().model_generation_times.size() == 2);
+  CHECK(result.value().reused_prompt_tokens == 96);
   const auto turn = output.str();
   CHECK(turn.find("Tool failed: missing") != std::string::npos);
   CHECK(turn.find("Tools | look up x2\n**Found it**\n") != std::string::npos);

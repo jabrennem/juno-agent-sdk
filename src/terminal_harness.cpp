@@ -610,6 +610,10 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
           tool_elapsed += activity.elapsed;
         timing += " · " + format_elapsed(tool_elapsed) + " tools";
       }
+      if (const auto reused = result.value().reused_prompt_tokens) {
+        timing += " · " + format_token_count(*reused)
+                  + (*reused == 1 ? " prompt token reused" : " prompt tokens reused");
+      }
       write_colored(options_, kMuted, timing) << "\n\n";
     } else if (terminal && streamed_text) {
       *output << '\n';

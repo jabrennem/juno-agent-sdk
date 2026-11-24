@@ -6,6 +6,7 @@
 
 #include "juno_sdk/expected.hpp"
 #include "juno_sdk/types.hpp"
+#include <optional>
 #include <span>
 #include <stop_token>
 
@@ -24,6 +25,8 @@ struct GenerationRequest {
 struct GenerationResponse {
   std::string content;
   std::vector<ToolCall> tool_calls;
+  /** Prompt tokens reused from inference memory. Empty when the backend does not report reuse. */
+  std::optional<std::size_t> reused_prompt_tokens{};
 };
 
 /** Token usage for a complete model-facing generation request. */

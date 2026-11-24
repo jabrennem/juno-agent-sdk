@@ -25,7 +25,8 @@ Agent::start_conversation() → Conversation B ─┘
 
 `Conversation::run()` and its callbacks are synchronous. Access each conversation
 sequentially. The shared model serializes prompt measurement and generation.
-Each generation processes the full prompt in a temporary inference context.
+By default each generation processes the full prompt in a temporary inference context.
+Enable [prompt cache retention](#prompt-cache-retention) to reuse matching prompt tokens.
 Separate conversations on different threads can overlap tool work. Use a worker
 thread for a responsive UI and a host-managed queue to order pending turns or
 limit concurrent runs.
@@ -37,11 +38,6 @@ commands. Output streams to stdout by default and can be redirected or disabled.
 [SDK examples](#use-from-another-cmake-application) ·
 [Terminal playgrounds](#run-the-playgrounds) ·
 [Public harness #16](https://github.com/jabrennem/juno-agent-sdk/issues/16)
-
-Also planned are reopening saved conversations and caching work for matching
-prompt tokens across generations.
-[Local session recall #15](https://github.com/jabrennem/juno-agent-sdk/issues/15) ·
-[Prompt cache retention #17](https://github.com/jabrennem/juno-agent-sdk/issues/17)
 
 ## Prerequisites
 
@@ -91,8 +87,12 @@ set in `examples/weather_agent.cpp`:
 ./build/juno_weather_agent /absolute/path/to/model.gguf
 ```
 
+Weather Agent enables [prompt cache retention](#prompt-cache-retention) automatically.
+
 Weather Agent streams formatted answers and groups repeated tool calls in a compact summary.
-Each reply ends with a local timestamp and the total, model, and tool durations.
+Each reply ends with a local timestamp, timing, and the total prompt tokens reused
+across the model passes for that reply. A count of zero means those passes reused
+no prompt tokens.
 Use `/activity` to inspect individual model pass times and tool arguments, outcomes, and durations.
 Use `/reasoning` to toggle the display of reasoning emitted by the model during future turns.
 Use `/reasoning on` or `/reasoning off` to set it explicitly.
@@ -105,6 +105,7 @@ In a terminal, type `/` and press Tab to list commands, or type a prefix such as
 (included with the macOS SDK and available as `libedit-dev` on Debian and Ubuntu).
 
 Weather Agent saves conversations in `~/.juno/sessions/weather/`. After restarting, use `/sessions` to see the 20 most recently updated conversations and `/sessions 2` to browse older ones. Use `/resume ID` to see recent exchanges and continue under the same ID. Use `/new` to start fresh or `/delete ID` to remove a saved conversation.
+[Local session recall #15](https://github.com/jabrennem/juno-agent-sdk/issues/15)
 
 Tool-capable models need a compatible chat template. Juno Agent Runtime uses the model’s template by default. Set `LlamaCppOptions::chat_template_override` to supply a known compatible template name.
 
@@ -355,9 +356,102 @@ messages to that file. Chat template warnings and errors still go to standard er
 
 Set `LlamaCppOptions::prompt_log_path` to append the exact post-template prompt sent to llama.cpp to a local diagnostic file. `LlamaCppOptions::batch_size` controls prompt decoding batch size; prompts larger than one batch are decoded in multiple chunks while remaining within `context_size`.
 
-The model also emits an `EventType::Prompt` event immediately before tokenization. Its `text` field contains that same complete rendered prompt, allowing applications to inspect or print it through the normal event callback.
+The model also emits an `EventType::Prompt` event before inference begins. Its `text` field contains that same complete rendered prompt, allowing applications to inspect or print it through the normal event callback.
 
 Juno uses a small JSON tool protocol rather than provider-native tool calling. Tool definitions are included in the prompt, and a model requests a tool by returning JSON in the `tool_calls` shape shown above. Tool results are rendered as ordinary conversation text so chat templates that do not support a native `tool` role can still render the exchange.
+
+### Prompt cache retention
+
+```cpp
+auto model = LlamaCppModel::create({
+    .model_path = "/path/to/model.gguf",
+    .prompt_cache_retention = PromptCacheRetention::MostRecentPrompt,
+});
+```
+
+`PromptCacheRetention::Disabled` (the default) releases the inference context
+after each generation. `MostRecentPrompt` keeps one inference context per model
+instance after a successful generation. The next request reuses only the exact
+token prefix shared with the last rendered prompt. The adapter discards the old
+suffix, including generated tokens, and decodes at least the final prompt token
+to obtain current logits. If llama.cpp cannot preserve the prefix, the adapter
+decodes the full prompt from empty inference memory. An error or cancellation
+during inference releases the in-use context.
+
+For recurrent models and hybrids with full attention, such as Qwen3.8-27B,
+the adapter keeps one in-memory recurrent-state checkpoint near the end of
+the prompt. It can reuse up to that checkpoint when the next prompt shares
+the prefix. The checkpoint adds model-dependent memory overhead.
+
+Conversations still own their transcripts and model-facing context. Switching
+conversations or compacting a transcript may shorten the matching prefix.
+Session files can be restored independently of the cache.
+
+Retention keeps the inference context's KV cache and working buffers allocated
+between requests, on the CPU or accelerator used by llama.cpp. The footprint
+depends on the model, context size, batch size, and backend. All conversations
+sharing a model instance share this one cache.
+
+#### Weather Agent example with Qwen3.8-27B
+
+These live runs used `Qwen3.8-27B-Q4_K_M.gguf`. Each forecast took three
+model passes. The earlier run reported zero reused prompt tokens. After the
+recurrent-state checkpoint change, Weather Agent reported reuse across the
+passes for each reply.
+
+| Forecast | Earlier total time | Total time with reuse | Prompt tokens reused | Reduction in wait time |
+| --- | ---: | ---: | ---: | ---: |
+| Columbus, OH | 113.3 s | 87.7 s | 2,120 | 22.6% |
+| Myrtle Beach, SC | 110.0 s | 75.2 s | 5,641 | 31.6% |
+
+Together, the two replies took **27.0% less time**. The prompts, conversation
+order, and live forecasts differed between runs, so these timings show the
+observed change in end-to-end wait time.
+
+#### Local benchmark
+
+Qwen2.5 3B Instruct Q4_K_M, Apple M1 Pro with Metal, 4,096-token context and
+512-token batches. Each run used a fresh process and one model instance. It
+timed the first streamed text after a synthetic weather tool result and across
+eight follow-ups. The alternating workload switched between two conversations
+with different system prompts after every generation. Prompts ranged from 683
+to 917 tokens across the workloads.
+
+| Workload | Retention | First request | Median follow-up | Peak process RSS |
+| --- | --- | ---: | ---: | ---: |
+| Repeated | Disabled | 1,455 ms | 1,517 ms | 2.24 GiB |
+| Repeated | Most recent | 1,198 ms | 86 ms | 2.23 GiB |
+| Alternating | Disabled | 1,236 ms | 1,427 ms | 2.24 GiB |
+| Alternating | Most recent | 1,366 ms | 1,432 ms | 2.24 GiB |
+
+The repeated conversation was about 18× faster on follow-ups. Alternating
+conversations shared little of their prompt prefix, and their median was
+within 5 ms of the disabled run. Backend logs showed one context allocation
+per retained run and nine per disabled run. llama.cpp allocated 144 MiB of
+KV memory and about 317 MiB of compute buffers per context. Both policies use those
+buffers during inference. The retained policy keeps them allocated between
+calls, so peak process RSS alone understates the difference in idle memory.
+
+Reproduce on macOS with the llama.cpp-enabled test build. The benchmark
+excludes model loading and prompt measurement from its timing, and
+`/usr/bin/time -l` reports peak RSS in bytes. The backend logs report
+the context buffer sizes.
+
+```sh
+./build.sh --test
+export JUNO_TEST_GGUF=/absolute/path/to/model.gguf
+log_dir=$(mktemp -d)
+for workload in repeated alternating; do
+  for retention in disabled recent; do
+    JUNO_BENCH_WORKLOAD="$workload" JUNO_BENCH_RETENTION="$retention" \
+      JUNO_LLAMA_LOG_PATH="$log_dir/$workload-$retention.log" \
+      /usr/bin/time -l ./build/juno_sdk_tests '[llama-cache-bench]'
+  done
+done
+./build/juno_sdk_tests '[llama-cache]'
+```
+
+[Prompt cache retention #17](https://github.com/jabrennem/juno-agent-sdk/issues/17)
 
 ## Layout
 
@@ -369,4 +463,4 @@ Juno uses a small JSON tool protocol rather than provider-native tool calling. T
 | `test_support/juno_sdk/fake_model.hpp` | Build-only fake model API for tests. |
 | `src/llama_cpp_model.cpp` | Private direct llama.cpp adapter. |
 | `examples` | Weather Agent and its steering document. |
-| `tests` | Fake-model unit tests. |
+| `tests` | Fake-model unit tests and opt-in local GGUF checks. |

@@ -231,6 +231,7 @@ int main(int argc, char **argv) {
   auto model = juno::sdk::LlamaCppModel::create({
       .model_path = argv[1],
       .context_size = kContextSize,
+      .prompt_cache_retention = juno::sdk::PromptCacheRetention::MostRecentPrompt,
   });
 
   // Keep durable weather preferences and recurring locations in an inspectable Markdown store.

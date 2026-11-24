@@ -18,6 +18,7 @@ struct FakeStep {
   std::vector<ToolCall> tool_calls;
   Error error{ErrorCode::GenerationFailed, "scripted model failure"};
   std::string reasoning;
+  std::optional<std::size_t> reused_prompt_tokens{};
 
   static FakeStep final(std::string text, std::string reasoning = {});
   static FakeStep calls(std::vector<ToolCall> calls, std::string text = {});
