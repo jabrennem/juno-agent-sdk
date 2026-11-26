@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <random>
 #include <sstream>
@@ -9,6 +10,12 @@
 #include "juno_sdk/fake_model.hpp"
 #include "juno_sdk/juno_sdk.hpp"
 #include "../src/terminal_markdown.hpp"
+#include "../src/terminal_thinking_animation.hpp"
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 
 namespace {
 using namespace juno::sdk;
@@ -41,6 +48,29 @@ public:
 private:
   std::streambuf *previous_;
 };
+
+TEST_CASE("Terminal thinking rotates through languages after four dot frames") {
+  detail::TerminalThinkingAnimation animation;
+  for (const char *label : {"Thinking", "Pensando", "正在思考", "सोच रहा हूँ", "أفكّر"}) {
+    for (const char *suffix : {"", ".", "..", "..."}) {
+      CHECK(std::string(animation.label()) == label);
+      CHECK(std::string(animation.suffix()) == suffix);
+      animation.advance();
+    }
+  }
+}
+
+TEST_CASE("Terminal thinking starts each word without dots when interrupted") {
+  detail::TerminalThinkingAnimation animation;
+  animation.advance();
+  animation.restart_word();
+  CHECK(std::string(animation.label()) == "Thinking");
+  CHECK(animation.suffix().empty());
+
+  detail::TerminalThinkingAnimation next_turn(animation.next_word());
+  CHECK(std::string(next_turn.label()) == "Pensando");
+  CHECK(next_turn.suffix().empty());
+}
 
 TEST_CASE("TerminalHarness invoke streams text and returns the turn result") {
   auto model = std::make_shared<FakeModel>(std::vector{
@@ -202,6 +232,62 @@ TEST_CASE("TerminalHarness groups successful tool calls and exposes last-turn de
   CHECK(transcript.find("Failed  missing({})  unknown tool: missing  (") != std::string::npos);
   CHECK(transcript.find("No tool calls in the last turn.") != std::string::npos);
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+TEST_CASE("TerminalHarness shows completed tools above the current step", "[tty]") {
+  const auto *term = std::getenv("TERM");
+  const auto *no_color = std::getenv("NO_COLOR");
+  if (!isatty(STDOUT_FILENO) || (term && std::string_view(term) == "dumb") ||
+      (no_color && *no_color != '\0'))
+    SKIP("Requires a styled terminal");
+
+  auto model = std::make_shared<FakeModel>(std::vector{
+      FakeStep::calls({{"call-1", "lookup", "{}"}, {"call-2", "convert", "{}"}}),
+      FakeStep::calls({{"call-3", "lookup", R"({"id":3})"}, {"call-4", "lookup", R"({"id":4})"}}),
+      FakeStep::final("Found it\n"),
+  });
+  auto agent = Agent::create({
+      .model = model,
+      .tools = {{{"lookup", "Look something up."},
+                 [](std::string_view) -> Expected<std::string> { return "result"; }},
+                {{"convert", "Convert a value."},
+                 [](std::string_view) -> Expected<std::string> { return "converted"; }}},
+  });
+  CoutCapture console;
+  auto harness = TerminalHarness::create({.agent = agent, .show_tools = true});
+  REQUIRE(harness.invoke("Look it up"));
+
+  const auto text = console.output.str();
+  const auto thinking = text.find("Thinking");
+  const auto lookup = text.find("Running lookup...");
+  const auto heading = text.find("Activity", lookup);
+  const auto lookup_completed = text.find("- Tool: Completed lookup", heading);
+  const auto after_lookup = text.find("Thinking", lookup_completed);
+  const auto convert = text.find("Running convert...", after_lookup);
+  const auto convert_completed = text.find("- Tool: Completed convert", convert);
+  const auto repeated_lookup = text.find("Running lookup...", convert_completed);
+  const auto after_tools = text.rfind("Thinking");
+  const auto answer = text.find("Found it", after_tools);
+  REQUIRE(answer != std::string::npos);
+  CHECK(thinking < lookup);
+  CHECK(repeated_lookup < after_tools);
+  CHECK(text.find("Activity", heading + 1) == std::string::npos);
+  CHECK(text.find("Tools ·") == std::string::npos);
+  winsize size{};
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0 ||
+      ((size.ws_col == 0 || size.ws_col >= 32) && (size.ws_row == 0 || size.ws_row >= 5))) {
+    const auto grouped = text.find("- Tool: Completed lookup x3", repeated_lookup);
+    CHECK(grouped < after_tools);
+  }
+
+  std::istringstream commands("/activity\n/quit\n");
+  REQUIRE(harness.run_interactive(commands));
+  const auto transcript = console.output.str();
+  CHECK(transcript.find("Completed\033[0m  lookup({})") != std::string::npos);
+  CHECK(transcript.find("Completed\033[0m  convert({})") != std::string::npos);
+  CHECK(transcript.find(R"(lookup({"id":4}))") != std::string::npos);
+}
+#endif
 
 TEST_CASE("Terminal Markdown formats split deltas and wraps lists while preserving code") {
   std::ostringstream output;

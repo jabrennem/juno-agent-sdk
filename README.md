@@ -72,10 +72,11 @@ only need a GGUF model when you run inference.
 | `JUNO_AGENT_BUILD_LLAMA_SERVER` | `OFF` | Build llama.cpp's local HTTP server and tools when llama.cpp is enabled. |
 
 `build.sh` defaults to Release and passes additional arguments to CMake. Use
-`--examples` and `--test` to enable those targets for the current run. Set
-`JUNO_AGENT_BUILD_TYPE=Debug` when debugging or `JUNO_AGENT_BUILD_DIR` to use
-another directory. If the tools are outside your `PATH`, set `CMAKE_BIN` and
-`CTEST_BIN` to their respective paths.
+`--examples` and `--test` to enable those targets for the current run. To
+include the optional server, set `JUNO_AGENT_BUILD_LLAMA_SERVER=ON` or pass
+`-DJUNO_AGENT_BUILD_LLAMA_SERVER=ON` on that run. Set `JUNO_AGENT_BUILD_TYPE=Debug`
+when debugging or `JUNO_AGENT_BUILD_DIR` to use another directory. If the tools
+are outside your `PATH`, set `CMAKE_BIN` and `CTEST_BIN` to their respective paths.
 
 ## Run Weather Agent
 
@@ -89,7 +90,10 @@ set in `examples/weather_agent.cpp`:
 
 Weather Agent enables [prompt cache retention](#prompt-cache-retention) automatically.
 
-Weather Agent streams formatted answers and groups repeated tool calls in a compact summary.
+Weather Agent streams formatted answers and adds completed tools to a live Activity
+summary. Repeated calls update the tool's count. The status line beneath the summary
+names the running tool and resumes the multilingual thinking animation when the tool
+finishes.
 Each reply ends with a local timestamp, timing, and the total prompt tokens reused
 across the model passes for that reply. A count of zero means those passes reused
 no prompt tokens.
@@ -176,15 +180,17 @@ int main() {
 
 For a terminal loop, call `harness.run_interactive()`. Pass an input stream to read
 scripted prompts and commands. Set `TerminalHarnessOptions::output` to a stream pointer
-to redirect output or to `nullptr` for silent operation. Set `show_tools` to summarize
-completed tool calls, or `show_reasoning` to also print reasoning. Tool failures appear
+to redirect output or to `nullptr` for silent operation. Set `show_tools` to name the
+current tool and show completed calls on styled terminals. Plain output includes a
+compact summary of completed calls.
+Set `show_reasoning` to also print reasoning. Tool failures appear
 as they happen. The `/activity` command lists model generation times and individual tool calls
 from the last turn.
 Use `banner` for a startup title, `help` for
 application-specific instructions, and `compaction` to enable `/compact` and `/context`.
-On supported terminals, the thinking line animates its dots once per second. Each phrase
-starts with three dots, then shows one, two, and three before the next phrase.
-It rotates through English phrases and translations covering languages and varieties
+On supported terminals, the thinking line adds one dot per second, starting at zero
+and switching phrases after three dots. It rotates through English and translations
+covering languages and varieties
 with at least 50 million total speakers in the
 [2026 Ethnologue ranking](https://www.ethnologue.com/insights/ethnologue200). Each new turn
 continues the rotation. The harness formats

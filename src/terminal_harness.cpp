@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "terminal_markdown.hpp"
+#include "terminal_thinking_animation.hpp"
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/ioctl.h>
@@ -90,13 +91,29 @@ bool color_enabled(const TerminalHarnessOptions &options) {
   return options.color && (!no_color || *no_color == '\0') && terminal_output(options);
 }
 
-std::size_t terminal_width() {
+struct TerminalDimensions {
+  std::size_t columns{80};
+  std::size_t rows{24};
+};
+
+TerminalDimensions terminal_dimensions() {
+  TerminalDimensions dimensions;
 #if defined(__unix__) || defined(__APPLE__)
   winsize size{};
-  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0)
-    return size.ws_col;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0) {
+    if (size.ws_col > 0)
+      dimensions.columns = size.ws_col;
+    if (size.ws_row > 0)
+      dimensions.rows = size.ws_row;
+  }
 #endif
-  return 80;
+  return dimensions;
+}
+
+std::size_t max_columns(std::string_view text) {
+  const auto ascii_columns =
+      std::ranges::count_if(text, [](unsigned char byte) { return byte < 0x80; });
+  return 2 * detail::terminal_text_width(text) - ascii_columns;
 }
 
 std::ostream &write_colored(const TerminalHarnessOptions &options, std::string_view color,
@@ -113,7 +130,7 @@ std::ostream &write_colored(const TerminalHarnessOptions &options, std::string_v
 
 class StatusLine {
 public:
-  StatusLine(std::ostream *output, std::size_t frame) : output_(output), frame_(frame) {}
+  StatusLine(std::ostream *output, std::size_t word) : output_(output), animation_(word) {}
   ~StatusLine() {
     if (worker_.joinable()) {
       {
@@ -145,7 +162,7 @@ public:
       worker_ = std::thread([this] { animate(); });
     thinking_ = true;
     ++thinking_sequence_;
-    dots_frame_ = 0;
+    animation_.restart_word();
     redraw_thinking();
     changed_.notify_one();
   }
@@ -159,9 +176,9 @@ public:
     changed_.notify_one();
   }
 
-  std::size_t next_frame() {
+  std::size_t next_word() {
     const std::lock_guard lock(mutex_);
-    return (frame_ + 1) % kThinkingFrames.size();
+    return animation_.next_word();
   }
 
 private:
@@ -176,16 +193,16 @@ private:
 
   void redraw(std::string_view label, std::string_view suffix = {}) {
     erase();
-    const auto ascii_columns =
-        std::ranges::count_if(label, [](unsigned char byte) { return byte < 0x80; });
-    const auto max_columns = 2 * detail::terminal_text_width(label) - ascii_columns;
-    if (max_columns + suffix.size() >= terminal_width())
+    const auto label_columns = max_columns(label);
+    const auto width = terminal_dimensions().columns;
+    if (label_columns >= width)
       return;
+    suffix = suffix.substr(0, width - label_columns - 1);
     *output_ << kMuted << label << suffix << kReset << std::flush;
     visible_ = true;
   }
 
-  void redraw_thinking() { redraw(kThinkingFrames[frame_], kThinkingDots[dots_frame_]); }
+  void redraw_thinking() { redraw(animation_.label(), animation_.suffix()); }
 
   void animate() {
     std::unique_lock lock(mutex_);
@@ -198,65 +215,17 @@ private:
             return stopping_ || !thinking_ || thinking_sequence_ != sequence;
           }))
         continue;
-      dots_frame_ = (dots_frame_ + 1) % kThinkingDots.size();
-      if (dots_frame_ == 0)
-        frame_ = (frame_ + 1) % kThinkingFrames.size();
+      animation_.advance();
       redraw_thinking();
     }
   }
 
-  static constexpr std::array<std::string_view, 4> kThinkingDots{"...", ".", "..", "..."};
-  // Includes each entry with at least 50 million total speakers in Ethnologue's 2026 ranking.
-  static constexpr auto kThinkingFrames = std::to_array<std::string_view>({
-      "Thinking",           // English
-      "Pensando",           // Spanish and Portuguese
-      "正在思考",            // Mandarin Chinese
-      "सोच रहा हूँ",           // Hindi
-      "أفكّر",               // Modern Standard Arabic
-      "Je réfléchis",       // French
-      "ভাবছি",               // Bengali
-      "Pondering",
-      "Sedang berpikir",    // Indonesian
-      "سوچ رہا ہوں",         // Urdu
-      "Думаю",              // Russian
-      "Denke nach",         // German
-      "考え中",              // Japanese
-      "I dey think",        // Nigerian Pidgin
-      "بفكّر",               // Egyptian Arabic
-      "Considering",
-      "विचार करत आहे",       // Marathi
-      "Đang suy nghĩ",      // Vietnamese
-      "ఆలోచిస్తున్నాను",       // Telugu
-      "Ninafikiria",         // Swahili
-      "Ina tunani",         // Hausa
-      "Düşünüyorum",        // Turkish
-      "سوچ ریا واں",         // Western Punjabi
-      "Mulling it over",
-      "Nag-iisip",          // Tagalog
-      "யோசிக்கிறேன்",         // Tamil
-      "諗緊",                // Yue Chinese (Cantonese)
-      "辣海想",              // Wu Chinese (Shanghainese)
-      "دارم فکر می‌کنم",       // Iranian Persian
-      "생각 중",             // Korean
-      "እያሰብኩ ነው",            // Amharic
-      "Working it out",
-      "กำลังคิด",            // Thai
-      "Lagi mikir",         // Javanese
-      "Sto pensando",       // Italian
-      "વિચારી રહ્યો છું",        // Gujarati
-      "ಯೋಚಿಸುತ್ತಿದ್ದೇನೆ",        // Kannada
-      "عم فكّر",             // Levantine Arabic
-      "قاعد أفكّر",          // Sudanese Arabic
-      "Mo ń ronú",          // Yoruba
-      "सोचत बानी",           // Bhojpuri
-  });
   std::ostream *output_;
   std::mutex mutex_;
   std::condition_variable changed_;
   std::thread worker_;
   std::size_t thinking_sequence_{};
-  std::size_t frame_{};
-  std::size_t dots_frame_{};
+  detail::TerminalThinkingAnimation animation_;
   bool thinking_{};
   bool visible_{};
   bool stopping_{};
@@ -267,6 +236,75 @@ std::string tool_label(std::string_view name) {
   std::replace(label.begin(), label.end(), '_', ' ');
   return label;
 }
+
+class LiveToolSummary {
+public:
+  explicit LiveToolSummary(std::ostream &output) : output_(output) {}
+
+  // The caller clears the status line before touching the transcript.
+  void complete(const std::string &name) {
+    const auto size = terminal_dimensions();
+    if (width_ != size.columns) {
+      width_ = size.columns;
+      single_line_rows_ = 0;
+    }
+    if (rows_written_ == 0)
+      output_ << kMuted << "Activity" << kReset << '\n';
+
+    auto row = std::ranges::find(rows_, name, &ToolRow::name);
+    if (row == rows_.end())
+      row = rows_.insert(row, {name});
+    const auto line = "- Tool: Completed " + tool_label(name);
+    const auto rows_back = rows_written_ - row->position;
+    const auto distance = rows_back + gap_;
+    // Only revisit rows that still fit on screen and have no wrapped lines below them.
+    if (row->count > 0 && rows_back <= single_line_rows_ && distance < size.rows) {
+      const auto updated = line + " x" + std::to_string(row->count + 1);
+      if (max_columns(updated) < size.columns) {
+        ++row->count;
+        output_ << "\033[" << distance << "A\r\033[2K" << kMuted << updated << kReset
+                << "\033[" << distance << "B\r" << std::flush;
+        return;
+      }
+    }
+
+    if (gap_)
+      output_ << "\033[A\r";
+    row->position = rows_written_++;
+    row->count = 1;
+    single_line_rows_ = max_columns(line) < size.columns ? single_line_rows_ + 1 : 0;
+    output_ << kMuted << line << kReset << '\n';
+    gap_ = size.rows > 1;
+    if (gap_)
+      output_ << '\n';
+    output_ << std::flush;
+  }
+
+  void finish() {
+    if (rows_written_ == 0)
+      return;
+    if (!gap_)
+      output_ << '\n';
+    rows_.clear();
+    rows_written_ = 0;
+    single_line_rows_ = 0;
+    gap_ = false;
+  }
+
+private:
+  struct ToolRow {
+    std::string name;
+    std::size_t count{};
+    std::size_t position{};
+  };
+
+  std::ostream &output_;
+  std::vector<ToolRow> rows_;
+  std::size_t rows_written_{};
+  std::size_t single_line_rows_{};
+  std::size_t width_{};
+  bool gap_{};
+};
 
 std::string_view trim(std::string_view text) {
   const auto first = text.find_first_not_of(" \t\r\n");
@@ -430,9 +468,12 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
   auto *output = options_.output;
   const bool color = terminal && color_enabled(options_);
   StatusLine status(color ? output : nullptr, next_thinking_frame_);
+  std::optional<LiveToolSummary> live_tools;
+  if (color && options_.show_tools)
+    live_tools.emplace(*output);
   std::optional<detail::TerminalMarkdown> markdown;
   if (terminal)
-    markdown.emplace(*output, color, std::min<std::size_t>(terminal_width(), 78));
+    markdown.emplace(*output, color, std::min<std::size_t>(terminal_dimensions().columns, 78));
 
   last_activity_.clear();
   last_model_times_.clear();
@@ -454,8 +495,12 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
     finish_line();
     writing_answer = false;
   };
+  const auto finish_tool_summary = [&] {
+    if (live_tools)
+      live_tools->finish();
+  };
   const auto summarize = [&] {
-    if (!options_.show_tools || summarized == last_activity_.size())
+    if (live_tools || !options_.show_tools || summarized == last_activity_.size())
       return;
     std::vector<std::pair<std::string_view, std::size_t>> counts;
     for (; summarized < last_activity_.size(); ++summarized) {
@@ -489,6 +534,7 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
     if (!writing_answer) {
       status.clear();
       finish_line();
+      finish_tool_summary();
       summarize();
       if (markdown) {
         for (auto newline = text.find('\n');
@@ -523,6 +569,7 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
         if (event.text.empty() || !options_.show_reasoning)
           break;
         status.clear();
+        finish_tool_summary();
         if (writing_answer)
           finish_answer();
         write_colored(options_, kMuted,
@@ -544,15 +591,20 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
         tool_started_at.reset();
         if (event.tool_error) {
           status.clear();
+          finish_tool_summary();
           write_colored(options_, kError, "Tool failed: ", tool_label(event.tool_call.name), " · ",
                         detail::terminal_text(*event.tool_error))
               << '\n' << std::flush;
+        } else if (live_tools) {
+          status.clear();
+          live_tools->complete(event.tool_call.name);
         }
         status.think();
         break;
       case EventType::CompactionStarted:
         if (options_.compaction) {
           finish_answer();
+          finish_tool_summary();
           if (color)
             status.show("Compacting conversation...");
           else if (!terminal)
@@ -581,7 +633,7 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
     result = Error{ErrorCode::Cancelled, "agent run was cancelled"};
   status.clear();
   if (color)
-    next_thinking_frame_ = status.next_frame();
+    next_thinking_frame_ = status.next_word();
   if (output) {
     if (result) {
       last_model_times_ = result.value().model_generation_times;
@@ -593,6 +645,7 @@ Expected<RunResult> TerminalHarness::invoke(std::string_view prompt, std::stop_t
       }
     }
     finish_answer();
+    finish_tool_summary();
     summarize();
     if (terminal && result && streamed_text) {
       *output << '\n';

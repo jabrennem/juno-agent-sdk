@@ -12,7 +12,7 @@ struct TerminalHarnessOptions {
   Agent agent;
   /** Borrowed terminal output stream. Set to nullptr to silence output. */
   std::ostream *output{&std::cout};
-  /** Show a compact summary of successful tool calls. Failures are always visible. */
+  /** Show the current tool and completed calls on styled terminals. Summarize calls in plain output. */
   bool show_tools{false};
   /** Initially display model reasoning deltas. Toggle during a session with /reasoning. */
   bool show_reasoning{false};
