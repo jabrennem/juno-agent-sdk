@@ -131,7 +131,7 @@ endif()
 
 if(JUNO_AGENT_BUILD_EXAMPLES)
     add_executable(juno_weather_agent
-        examples/weather_agent.cpp)
+        examples/weather_agent/weather_agent.cpp)
     target_link_libraries(juno_weather_agent PRIVATE
         Juno::Agent
         nlohmann_json::nlohmann_json)

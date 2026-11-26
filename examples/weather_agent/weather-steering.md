@@ -8,7 +8,10 @@
 
 # Example weather preferences
 
-- Prefer Fahrenheit for temperatures unless the user asks for Celsius.
+- For forecasts, set `fahrenheit` to `true` in `weather_forecast` when the user wants Fahrenheit.
+  Set it to `false` or omit it for Celsius. If the request leaves the unit unspecified, use a
+  remembered preference when available. Otherwise, let the tool default to Celsius.
+- Use `temperature_unit_conversion` for standalone conversions such as “Convert 18°C to Fahrenheit.”
 - Include the high and low when a forecast is available.
 - Mention that forecast data comes from Open-Meteo when useful.
 - Keep the first response short and offer to provide more detail if needed.

@@ -4,7 +4,6 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <utility>
 
 #include <curl/curl.h>
@@ -122,7 +121,7 @@ juno::sdk::Expected<WeatherForecast> fetch_forecast(const Location &location, in
   url << "https://api.open-meteo.com/v1/forecast?latitude=" << location.latitude
       << "&longitude=" << location.longitude << "&current=temperature_2m,weather_code"
       << "&daily=temperature_2m_max,temperature_2m_min"
-      << "&forecast_days=" << days << "&timezone=auto";
+      << "&forecast_days=" << days << "&timezone=auto&temperature_unit=celsius";
 
   auto result = get_json(url.str());
   if (!result)
@@ -145,39 +144,59 @@ juno::sdk::Expected<WeatherForecast> fetch_forecast(const Location &location, in
   }
 }
 
-std::string format_forecast(const WeatherForecast &forecast) {
+enum class TemperatureUnit { Celsius, Fahrenheit };
+
+std::optional<TemperatureUnit> parse_temperature_unit(const juno::sdk::JsonObject &value) {
+  if (value == "celsius")
+    return TemperatureUnit::Celsius;
+  if (value == "fahrenheit")
+    return TemperatureUnit::Fahrenheit;
+  return std::nullopt;
+}
+
+const char *unit_label(TemperatureUnit unit) {
+  return unit == TemperatureUnit::Celsius ? "Celsius" : "Fahrenheit";
+}
+
+double convert_temperature(double value, TemperatureUnit source, TemperatureUnit target) {
+  if (source == target)
+    return value;
+  if (source == TemperatureUnit::Celsius)
+    return value * (9.0 / 5.0) + 32.0;
+  return (value - 32.0) * (5.0 / 9.0);
+}
+
+std::string format_forecast(const WeatherForecast &forecast, TemperatureUnit unit) {
+  const auto from_celsius = [unit](double value) {
+    return convert_temperature(value, TemperatureUnit::Celsius, unit);
+  };
+  const char *label = unit_label(unit);
   std::ostringstream output;
   output << "Weather in " << forecast.location.city << " (" << forecast.location.timezone
-         << "): currently " << forecast.current_temperature << " degrees, with a high of "
-         << forecast.high_temperature << " and a low of " << forecast.low_temperature
-         << " today. Weather code " << forecast.weather_code << ". Data from Open-Meteo.";
+         << "): currently " << from_celsius(forecast.current_temperature) << ' ' << label
+         << ", with a high of "
+         << from_celsius(forecast.high_temperature) << ' ' << label << " and a low of "
+         << from_celsius(forecast.low_temperature) << ' ' << label << " today. Weather code "
+         << forecast.weather_code << ". Data from Open-Meteo.";
   return output.str();
 }
 
-// Callback function for the temperature_unit_conversion tool
 juno::sdk::ToolResult conversion_tool_handler(const juno::sdk::JsonObject &params) {
   if (!params.contains("temperature_value") || !params["temperature_value"].is_number())
     return {false, "temperature_value must be a number."};
-  if (!params.contains("source_unit") || !params["source_unit"].is_string())
+  const auto source = params.find("source_unit");
+  if (source == params.end())
+    return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
+  const auto source_unit = parse_temperature_unit(*source);
+  if (!source_unit)
     return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
 
-  const double temperature_value = params["temperature_value"].get<double>();
-  const std::string source_unit = params["source_unit"].get<std::string>();
-
-  double result = 0.0;
-  std::string target_unit;
-  if (source_unit == "celsius") {
-    result = temperature_value * (9.0 / 5.0) + 32.0;
-    target_unit = "Fahrenheit";
-  } else if (source_unit == "fahrenheit") {
-    result = (temperature_value - 32.0) * (5.0 / 9.0);
-    target_unit = "Celsius";
-  } else {
-    return {false, "source_unit must be either 'celsius' or 'fahrenheit'."};
-  }
-
+  const auto target_unit = *source_unit == TemperatureUnit::Celsius ? TemperatureUnit::Fahrenheit
+                                                                    : TemperatureUnit::Celsius;
+  const double value = params["temperature_value"].get<double>();
   std::ostringstream output;
-  output << "Converted temperature: " << result << ' ' << target_unit;
+  output << "Converted temperature: " << convert_temperature(value, *source_unit, target_unit)
+         << ' ' << unit_label(target_unit);
   return {true, output.str()};
 }
 
@@ -198,6 +217,13 @@ juno::sdk::ToolResult weather_forecast_tool_handler(const juno::sdk::JsonObject 
   if (days < 1 || days > 16)
     return {false, "weather_forecast supports between 1 and 16 days"};
 
+  const auto fahrenheit = params.find("fahrenheit");
+  if (fahrenheit != params.end() && !fahrenheit->is_boolean())
+    return {false, "weather_forecast fahrenheit must be a boolean (true or false)."};
+  const auto unit = fahrenheit != params.end() && fahrenheit->get<bool>()
+                        ? TemperatureUnit::Fahrenheit
+                        : TemperatureUnit::Celsius;
+
   // Geocode the city to get its location
   auto geocoded = geocode_city(city);
   if (!geocoded)
@@ -210,7 +236,7 @@ juno::sdk::ToolResult weather_forecast_tool_handler(const juno::sdk::JsonObject 
     return {false, forecast.error().message};
 
   // Return the formatted forecast
-  return {true, format_forecast(forecast.value())};
+  return {true, format_forecast(forecast.value(), unit)};
 }
 
 } // namespace
@@ -247,7 +273,8 @@ int main(int argc, char **argv) {
   // Create a tool for fetching the weather forecast
   auto forecast_tool = juno::sdk::Tool::create(
       {.name = "weather_forecast",
-       .description = "Get weather forecast for a city.",
+       .description = "Get a city's forecast with current, high, and low temperatures in the "
+                      "requested temperature unit.",
        .parameters =
            {{.name = "city",
              .description = "The city to forecast",
@@ -256,6 +283,11 @@ int main(int argc, char **argv) {
             {.name = "days",
              .description = "Number of days for the forecast",
              .type = "integer",
+             .required = false},
+            {.name = "fahrenheit",
+             .description =
+                 "Return all temperatures in Fahrenheit when true. Defaults to false (Celsius).",
+             .type = "boolean",
              .required = false}},
        .handler = weather_forecast_tool_handler}
   );
@@ -263,8 +295,8 @@ int main(int argc, char **argv) {
   // Create a tool for converting temperatures between Celsius and Fahrenheit
   auto conversion_tool = juno::sdk::Tool::create(
       {.name = "temperature_unit_conversion",
-       .description = "Convert a temperature between Celsius and Fahrenheit. Always use this tool "
-                      "instead of calculating a temperature conversion yourself.",
+       .description = "Convert a supplied temperature between Celsius and Fahrenheit for a "
+                      "standalone conversion request.",
        .parameters =
            {
                {.name = "temperature_value",
@@ -281,7 +313,7 @@ int main(int argc, char **argv) {
 
   // Load steering files
   auto steering = juno::sdk::Steering::create({
-      .files = {"examples/weather-steering.md"},
+      .files = {"examples/weather_agent/weather-steering.md"},
   });
 
   // Create an agent that uses the model and the weather forecast tool
@@ -289,8 +321,10 @@ int main(int argc, char **argv) {
       .model = model,
       .system_prompt =
           "You are WeatherAgent. Answer weather questions concisely using the available tools "
-          "and durable memory when useful. For every Celsius/Fahrenheit conversion, always call "
-          "temperature_unit_conversion; never calculate the conversion yourself.",
+          "and durable memory when useful. For forecasts, set fahrenheit to true in "
+          "weather_forecast for Fahrenheit. Use false or omit it for Celsius. Use the "
+          "temperatures as returned. Use temperature_unit_conversion only for standalone "
+          "requests to convert a supplied temperature.",
       .steering = steering,
       .generation = {.max_tokens = kGenerationTokens},
       .reasoning_effort = juno::sdk::ReasoningEffort::Low,
